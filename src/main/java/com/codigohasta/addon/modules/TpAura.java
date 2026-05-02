@@ -238,13 +238,15 @@ public class TpAura extends Module {
         if (aoeEnabled.get()) {
             // 以 finalPos 为中心扫描周围有效实体
             List<Entity> nearby = new ArrayList<>();
+            double aoeRangeSq = aoeRange.get() * aoeRange.get();
             for (Entity entity : mc.world.getEntities()) {
                 if (!(entity instanceof LivingEntity) || !entity.isAlive() || entity == mc.player) continue;
-                if (entity.getPos().distanceTo(finalPos) > aoeRange.get()) continue;
+                // 使用 squaredDistanceTo 避免 getPos() 不存在
+                if (entity.squaredDistanceTo(finalPos.x, finalPos.y, finalPos.z) > aoeRangeSq) continue;
                 if (!entityCheckBasic(entity)) continue;
                 nearby.add(entity);
             }
-            nearby.sort(Comparator.comparingDouble(e -> e.getPos().distanceTo(finalPos)));
+            nearby.sort(Comparator.comparingDouble(e -> e.squaredDistanceTo(finalPos.x, finalPos.y, finalPos.z)));
             if (nearby.size() > aoeMaxTargets.get()) {
                 nearby = nearby.subList(0, aoeMaxTargets.get());
             }
