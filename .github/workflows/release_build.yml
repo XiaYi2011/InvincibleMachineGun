@@ -1,6 +1,11 @@
 name: Publish Dev Build
 on: 
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v1.0.0)'
+        required: true
+        default: 'v0.0.0-dev'
 
 jobs:
   build:
