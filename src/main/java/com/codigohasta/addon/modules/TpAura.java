@@ -58,7 +58,7 @@ public class TpAura extends Module {
     // --- 2. General Settings ---
     private final Setting<Boolean> autoSwitch = sgGeneral.add(new BoolSetting.Builder().name("自动切武器").defaultValue(true).build());
     private final Setting<Boolean> requireMace = sgGeneral.add(new BoolSetting.Builder().name("仅手持重锤").defaultValue(false).build());
-    private final Setting<Boolean> swingHand = sgGeneral.add(new BoolSetting.Builder().name("挥手").defaultValue(true).build());
+    private final Setting<Boolean> swingHand = sgGeneral.add(new BoolSetting.Builder().name("发送挥手包").defaultValue(true).build());
 
     // --- 3. TP Settings ---
     public enum Mode { Vanilla, Paper }
