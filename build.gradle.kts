@@ -8,6 +8,12 @@ base {
     group = properties["maven_group"] as String
 }
 
+// ======== Java 版本配置放在这里（必须在 tasks 块外部） ========
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
 repositories {
     maven {
         name = "meteor-maven"
@@ -17,7 +23,7 @@ repositories {
         name = "meteor-maven-snapshots"
         url = uri("https://maven.meteordev.org/snapshots")
     }
-     // ✅ 添加这个仓库来解决 conditional-mixin 找不到的问题
+    // ✅ 添加这个仓库来解决 conditional-mixin 找不到的问题
     maven {
         name = "FallenBreath Maven"
         url = uri("https://maven.fallenbreath.me/releases")
@@ -27,7 +33,7 @@ repositories {
     maven { url = uri("https://masa.dy.fi/maven") }
     // ✅ 必须加这个！Masa 的库强制依赖 FallenBreath 的条件混淆库
     maven { url = uri("https://maven.fallenbreath.me/releases") }
-    
+
     maven { url = uri("https://jitpack.io") }
     maven { url = uri("https://www.cursemaven.com") }
     // ... 其他仓库 ...
@@ -48,9 +54,6 @@ dependencies {
     modCompileOnly("meteordevelopment:baritone:1.21.11-SNAPSHOT")
 
     modCompileOnly(fileTree("libs") { include("*.jar") })
-     
-
-    
 }
 
 tasks {
@@ -76,17 +79,13 @@ tasks {
             rename { "${it}_${inputs.properties["archivesName"]}" }
         }
     }
+    // 🚫 注意：不再包含 java {} 或 withType<JavaCompile> 配置
+}
 
-    // 保持你要求的 Java 21 环境
-    java {
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
-    }
-
-    withType<JavaCompile> {
-        options.encoding = "UTF-8"
-        options.release.set(21)
-        options.compilerArgs.add("-Xlint:deprecation")
-        options.compilerArgs.add("-Xlint:unchecked")
-    }
+// ======== 编译选项也放在 tasks 块外部 ========
+tasks.withType<JavaCompile> {
+    options.encoding = "UTF-8"
+    options.release.set(21)
+    options.compilerArgs.add("-Xlint:deprecation")
+    options.compilerArgs.add("-Xlint:unchecked")
 }
