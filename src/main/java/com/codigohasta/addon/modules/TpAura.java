@@ -58,7 +58,7 @@ public class TpAura extends Module {
     // --- 2. General Settings ---
     private final Setting<Boolean> autoSwitch = sgGeneral.add(new BoolSetting.Builder().name("自动切武器").defaultValue(true).build());
     private final Setting<Boolean> requireMace = sgGeneral.add(new BoolSetting.Builder().name("仅手持重锤").defaultValue(false).build());
-    private final Setting<Boolean> swingHand = sgGeneral.add(new BoolSetting.Builder().name("发送挥手包").defaultValue(true).build());
+    private final Setting<Boolean> swingHand = sgGeneral.add(new BoolSetting.Builder().name("挥手").defaultValue(true).build());
 
     // --- 3. TP Settings ---
     public enum Mode { Vanilla, Paper }
@@ -236,19 +236,21 @@ public class TpAura extends Module {
 
         // ----- 攻击处理（支持范围攻击）-----
         if (aoeEnabled.get()) {
-            // 以finalPos为中心扫描周围实体
-            List<Entity> nearby = mc.world.getEntities()
-                .stream()
-                .filter(e -> e instanceof LivingEntity && e.isAlive() && e != mc.player)
-                .filter(e -> e.getPos().distanceTo(finalPos) <= aoeRange.get())
-                .filter(this::entityCheckBasic)   // 复用基础过滤，不检查maxRange
-                .sorted(Comparator.comparingDouble(e -> e.getPos().distanceTo(finalPos)))
-                .limit(aoeMaxTargets.get())
-                .collect(Collectors.toList());
+            // 以 finalPos 为中心扫描周围有效实体
+            List<Entity> nearby = new ArrayList<>();
+            for (Entity entity : mc.world.getEntities()) {
+                if (!(entity instanceof LivingEntity) || !entity.isAlive() || entity == mc.player) continue;
+                if (entity.getPos().distanceTo(finalPos) > aoeRange.get()) continue;
+                if (!entityCheckBasic(entity)) continue;
+                nearby.add(entity);
+            }
+            nearby.sort(Comparator.comparingDouble(e -> e.getPos().distanceTo(finalPos)));
+            if (nearby.size() > aoeMaxTargets.get()) {
+                nearby = nearby.subList(0, aoeMaxTargets.get());
+            }
 
             boolean swung = false;
             for (Entity e : nearby) {
-                // 挥手仅一次
                 if (swingHand.get() && !swung) {
                     mc.player.swingHand(Hand.MAIN_HAND);
                     swung = true;
@@ -256,7 +258,7 @@ public class TpAura extends Module {
                 mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(e, mc.player.isSneaking()));
             }
         } else {
-            // 单目标攻击（原有逻辑）
+            // 单目标攻击
             if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
             mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(primaryTarget, mc.player.isSneaking()));
         }
@@ -340,8 +342,7 @@ public class TpAura extends Module {
         return null;
     }
 
-    // ------------ 实体过滤重构 ------------
-    // 基础过滤（类型、状态、名单等，不含距离）
+    // 基础过滤（不含距离）
     private boolean entityCheckBasic(Entity entity) {
         if (!(entity instanceof LivingEntity) || !entity.isAlive() || entity == mc.player) return false;
         if (!entities.get().contains(entity.getType())) return false;
