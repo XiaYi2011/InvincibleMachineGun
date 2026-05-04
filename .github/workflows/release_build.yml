@@ -1,5 +1,5 @@
 name: Publish Dev Build
-on: 
+on:
   workflow_dispatch:
     inputs:
       version:
@@ -25,6 +25,10 @@ jobs:
             exit 1
           fi
 
+      - name: Get Short SHA
+        id: vars
+        run: echo "sha_short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
@@ -36,13 +40,13 @@ jobs:
 
       - name: Build with Gradle
         run: ./gradlew build
-      
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: snapshot
-          name: ${GITHUB_SHA:0:7}
+          tag_name: snapshot-${{ github.run_id }}          # 每次唯一
+          name: "${{ github.event.inputs.version }} (build ${{ steps.vars.outputs.sha_short }})"
           prerelease: true
           files: |
             ./build/libs/*.jar
