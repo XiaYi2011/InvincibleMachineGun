@@ -168,6 +168,8 @@ public class AddonTemplate extends MeteorAddon {
          modules.add(new AutoVault());
          modules.add(new ScreenActions());
          modules.add(new MobHud());
+         modules.add(new LavaESP());
+         modules.add(new CustomFishingBot());
 
          // BreakESP module - 挖掘显示 (必须放在AlienBreakManager初始化之前)
          modules.add(new BreakESP());
