@@ -49,16 +49,9 @@ public class TpAura extends Module {
     private final SettingGroup sgWhitelist = settings.createGroup("白名单");
     private final SettingGroup sgRender = settings.createGroup("渲染");
 
-    // 攻击延迟（毫秒）
     private final Setting<Integer> attackDelayMs = sgTiming.add(new IntSetting.Builder()
-        .name("额外延迟(ms)")
-        .description("每次攻击后的冷却时间，单位毫秒")
-        .defaultValue(0)
-        .min(0)
-        .sliderMax(5000)
-        .build());
+        .name("额外延迟(ms)").defaultValue(0).min(0).sliderMax(5000).build());
 
-    // 武器设置
     private final Setting<Boolean> autoSwitch = sgGeneral.add(new BoolSetting.Builder()
         .name("自动切武器").defaultValue(true).build());
     private final Setting<Boolean> requireMace = sgGeneral.add(new BoolSetting.Builder()
@@ -66,51 +59,26 @@ public class TpAura extends Module {
     private final Setting<Boolean> swingHand = sgGeneral.add(new BoolSetting.Builder()
         .name("挥手").defaultValue(true).build());
     private final Setting<Boolean> silentSwap = sgGeneral.add(new BoolSetting.Builder()
-        .name("静默切换").description("使用数据包切换武器（无动画、无声音）")
-        .defaultValue(true).visible(autoSwitch::get).build());
+        .name("静默切换").defaultValue(true).visible(autoSwitch::get).build());
 
-    // 传送设置
     public enum Mode { Vanilla, Paper }
     private final Setting<Mode> mode = sgTP.add(new EnumSetting.Builder<Mode>()
         .name("兼容模式").defaultValue(Mode.Paper).build());
     private final Setting<Double> maxRange = sgTP.add(new DoubleSetting.Builder()
-        .name("最大攻击范围")
-        .description("能攻击到的最远距离")
-        .defaultValue(49.0)
-        .min(1)
-        .sliderMax(99)
-        .build());
+        .name("最大攻击范围").defaultValue(49.0).min(1).sliderMax(99).build());
     private final Setting<Boolean> goUp = sgTP.add(new BoolSetting.Builder()
-        .name("V-Clip")
-        .description("启用 V-Clip 上升再下降的攻击路径")
-        .defaultValue(true)
-        .build());
+        .name("V-Clip").defaultValue(true).build());
     private final Setting<Double> vClipHeight = sgTP.add(new DoubleSetting.Builder()
-        .name("V-Clip 高度")
-        .description("上升的高度")
-        .defaultValue(22.0)
-        .min(1)
-        .sliderMax(100)
-        .visible(goUp::get)
-        .build());
+        .name("V-Clip 高度").defaultValue(22.0).min(1).sliderMax(100).visible(goUp::get).build());
     private final Setting<Boolean> returnPos = sgTP.add(new BoolSetting.Builder()
         .name("攻击后回传").defaultValue(true).build());
     private final Setting<Boolean> offsetFix = sgTP.add(new BoolSetting.Builder()
         .name("偏移同步").description("发送微小偏移包防止拉回").defaultValue(true).build());
     private final Setting<Boolean> antiLag = sgTP.add(new BoolSetting.Builder()
-        .name("反拉回")
-        .description("被服务器回弹时自动传送回目标位置")
-        .defaultValue(true)
-        .build());
+        .name("反拉回").defaultValue(true).build());
     private final Setting<Double> maxSingleTpDist = sgTP.add(new DoubleSetting.Builder()
-        .name("最大单次传送距离")
-        .description("单次传送超过此距离将拆分为多段，0 为不限制")
-        .defaultValue(0.0)
-        .min(0)
-        .sliderMax(100)
-        .build());
+        .name("最大单次传送距离").defaultValue(0.0).min(0).sliderMax(100).build());
 
-    // 目标设置
     private final Setting<Set<EntityType<?>>> entities = sgTargeting.add(new EntityTypeListSetting.Builder()
         .name("目标实体").defaultValue(Collections.singleton(EntityType.PLAYER)).build());
     private final Setting<Boolean> ignoreFriends = sgTargeting.add(new BoolSetting.Builder()
@@ -132,7 +100,6 @@ public class TpAura extends Module {
     private final Setting<String> playerList = sgWhitelist.add(new StringSetting.Builder()
         .name("玩家列表").defaultValue("").build());
 
-    // 渲染
     private final Setting<Boolean> renderPath = sgRender.add(new BoolSetting.Builder()
         .name("显示路径").defaultValue(true).build());
     private final Setting<SettingColor> pathColor = sgRender.add(new ColorSetting.Builder()
@@ -140,13 +107,8 @@ public class TpAura extends Module {
     private final Setting<SettingColor> targetColor = sgRender.add(new ColorSetting.Builder()
         .name("目标颜色").defaultValue(new SettingColor(255, 0, 0, 200)).build());
     private final Setting<Boolean> renderIntermediateNodes = sgRender.add(new BoolSetting.Builder()
-        .name("渲染中间点")
-        .description("当单次传送距离受限时，是否渲染分段传送的中间点")
-        .defaultValue(true)
-        .visible(() -> maxSingleTpDist.get() > 0)
-        .build());
+        .name("渲染中间点").defaultValue(true).visible(() -> maxSingleTpDist.get() > 0).build());
 
-    // 内部变量
     private final List<Entity> targets = new ArrayList<>();
     private final List<Vec3d> renderPathNodes = new ArrayList<>();
     private Entity currentTarget;
@@ -155,13 +117,13 @@ public class TpAura extends Module {
     private int silentSwapPrevSlot = -1;
     private long nextAttackTime = 0;
     private Vec3d expectedPos = null;
-
-    // 反拉回重试控制
     private int antiLagRetries = 0;
     private long lastAntiLagTime = 0;
 
+    private static final double movedWronglyThreshold = 0.0625D;
+
     public TpAura() {
-        super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。路径碰撞检测，单次传送距离限制");
+        super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。");
     }
 
     @Override
@@ -173,6 +135,7 @@ public class TpAura extends Module {
         renderPathNodes.clear();
         expectedPos = null;
         antiLagRetries = 0;
+        currentTarget = null;
     }
 
     @Override
@@ -183,8 +146,10 @@ public class TpAura extends Module {
             originalSlot = -1;
         }
         expectedPos = null;
+        currentTarget = null;
     }
 
+    // ---------- 武器逻辑保持不变 ----------
     private int findWeaponInventorySlot() {
         for (int i = 0; i < 45; i++) {
             String name = mc.player.getInventory().getStack(i).getItem().toString().toLowerCase();
@@ -251,173 +216,272 @@ public class TpAura extends Module {
 
         if (autoSwitch.get() && !checkAndSwapWeapon()) return;
 
+        // 获取所有符合条件的目标，按距离排序
         targets.clear();
-        TargetUtils.getList(targets, this::entityCheck, SortPriority.LowestDistance, 1);
+        TargetUtils.getList(targets, this::entityCheck, SortPriority.LowestDistance, 100);
         if (targets.isEmpty()) {
             currentTarget = null;
             swapBackWeapon();
             expectedPos = null;
             return;
         }
-        currentTarget = targets.get(0);
 
-        executeTrouserAttack(currentTarget);
+        currentTarget = null;
+        renderPathNodes.clear();
+
+        // 依次尝试每个目标，直到成功攻击一个
+        for (Entity target : targets) {
+            if (executeTrouserAttack(target)) {
+                currentTarget = target;
+                break;
+            }
+        }
+
+        if (currentTarget == null) {
+            expectedPos = null;
+            renderPathNodes.clear();
+        }
+
         swapBackWeapon();
-
         nextAttackTime = System.currentTimeMillis() + attackDelayMs.get();
     }
 
-    // ========== 核心攻击逻辑 ==========
-    private void executeTrouserAttack(Entity target) {
-        Vec3d playerPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
-        Vec3d targetPos = new Vec3d(target.getX(), target.getY(), target.getZ());
+    // 攻击执行，返回是否成功
+    private boolean executeTrouserAttack(Entity target) {
+        Vec3d startPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
+        Vec3d targetCenter = target.getBoundingBox().getCenter();
 
-        // 确定服务器认为的当前位置（用于起点与目标搜索）
-        Vec3d serverPos = (expectedPos != null && expectedPos.squaredDistanceTo(playerPos) < 100.0) ? expectedPos : playerPos;
-
-        // 在目标半径6格球体内寻找最靠近目标的合法站立点（而非靠近玩家）
-        Vec3d finalPos = findBestAttackPos(targetPos, serverPos, 6.0);
-        if (finalPos == null) return;
+        // 在目标中心周围6格球体内，寻找距离目标中心最近的可达点
+        Vec3d finalPos = findNearestLegalToTarget(startPos, targetCenter, 6.0);
+        if (finalPos == null) return false;
 
         if (mode.get() == Mode.Paper) {
-            paperAttack(target, serverPos, finalPos);
-        } else {
-            vanillaAttack(target, serverPos, finalPos);
-        }
-    }
-
-    private void paperAttack(Entity target, Vec3d serverPos, Vec3d finalPos) {
-        // 构建完整路径（去程+回程），再展开 maxSingleTpDist 分段
-        List<Vec3d> basePath = new ArrayList<>();
-        basePath.add(serverPos);
-
-        if (goUp.get()) {
-            double vh = vClipHeight.get();
-            basePath.add(serverPos.add(0, vh, 0));          // highStart
-            basePath.add(finalPos.add(0, vh, 0));           // highTarget
-            basePath.add(finalPos);                          // target
-        } else {
-            basePath.add(finalPos);
-        }
-
-        // 回程节点
-        if (returnPos.get()) {
             if (goUp.get()) {
-                basePath.add(finalPos.add(0, vClipHeight.get(), 0)); // highTarget
-                basePath.add(serverPos.add(0, vClipHeight.get(), 0)); // highStart
-            }
-            basePath.add(serverPos); // 回到起点
-            if (offsetFix.get()) {
-                basePath.add(getOffset(serverPos)); // 微小偏移
-            }
-        } else {
-            if (offsetFix.get()) {
-                basePath.add(getOffset(finalPos));
-            }
-        }
+                double vh = vClipHeight.get();
+                Vec3d highStart = startPos.add(0, vh, 0);
+                Vec3d highTarget = finalPos.add(0, vh, 0);
 
-        // 展开所有超过 maxSingleTpDist 的段
-        List<Vec3d> fullPath = new ArrayList<>();
-        double maxSeg = maxSingleTpDist.get();
-        for (int i = 0; i < basePath.size(); i++) {
-            if (i == 0) {
-                fullPath.add(basePath.get(0));
-                continue;
-            }
-            Vec3d from = basePath.get(i - 1);
-            Vec3d to = basePath.get(i);
-            if (maxSeg > 0 && from.distanceTo(to) > maxSeg) {
-                int segments = (int) Math.ceil(from.distanceTo(to) / maxSeg);
-                Vec3d dir = to.subtract(from).normalize();
-                double segLen = from.distanceTo(to) / segments;
-                Vec3d cur = from;
-                for (int j = 0; j < segments; j++) {
-                    cur = cur.add(dir.multiply(segLen));
-                    if (j == segments - 1) cur = to;
-                    fullPath.add(cur);
+                // 三段必须都通过预检
+                if (!isWholeTpValid(startPos, highStart) ||
+                    !isWholeTpValid(highStart, highTarget) ||
+                    !isWholeTpValid(highTarget, finalPos)) {
+                    return false;
+                }
+
+                renderPathNodes.clear();
+                buildRenderPath(startPos, highStart);
+                buildRenderPath(highStart, highTarget);
+                buildRenderPath(highTarget, finalPos);
+
+                Vec3d current = startPos;
+                expectedPos = current;
+                doPaperTP(current, highStart);
+                current = highStart; expectedPos = current;
+                doPaperTP(current, highTarget);
+                current = highTarget; expectedPos = current;
+                doPaperTP(current, finalPos);
+                current = finalPos; expectedPos = current;
+
+                if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+                mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
+
+                if (returnPos.get()) {
+                    if (!isWholeTpValid(current, highTarget) ||
+                        !isWholeTpValid(highTarget, highStart) ||
+                        !isWholeTpValid(highStart, startPos)) {
+                        return false;
+                    }
+                    doPaperTP(current, highTarget);
+                    current = highTarget; expectedPos = current;
+                    doPaperTP(current, highStart);
+                    current = highStart; expectedPos = current;
+                    doPaperTP(current, startPos);
+                    current = startPos; expectedPos = current;
+
+                    if (offsetFix.get()) {
+                        Vec3d offset = getOffset(startPos);
+                        doPaperTP(current, offset);
+                        expectedPos = offset;
+                    }
+                } else {
+                    if (offsetFix.get()) {
+                        Vec3d offset = getOffset(finalPos);
+                        doPaperTP(current, offset);
+                        expectedPos = offset;
+                    } else {
+                        expectedPos = finalPos;
+                    }
+                    mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
                 }
             } else {
-                fullPath.add(to);
+                if (!isWholeTpValid(startPos, finalPos)) return false;
+
+                renderPathNodes.clear();
+                buildRenderPath(startPos, finalPos);
+
+                Vec3d current = startPos;
+                expectedPos = current;
+                doPaperTP(current, finalPos);
+                current = finalPos; expectedPos = current;
+
+                if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+                mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
+
+                if (returnPos.get()) {
+                    if (!isWholeTpValid(current, startPos)) return false;
+                    doPaperTP(current, startPos);
+                    current = startPos; expectedPos = current;
+                    if (offsetFix.get()) {
+                        Vec3d offset = getOffset(startPos);
+                        doPaperTP(current, offset);
+                        expectedPos = offset;
+                    }
+                } else {
+                    if (offsetFix.get()) {
+                        Vec3d offset = getOffset(finalPos);
+                        doPaperTP(current, offset);
+                        expectedPos = offset;
+                    } else {
+                        expectedPos = finalPos;
+                    }
+                    mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
+                }
+            }
+            return true;
+        } else {
+            // Vanilla 模式（保留兼容）
+            double vh2 = vClipHeight.get();
+            Vec3d highStart2 = startPos.add(0, vh2, 0);
+            Vec3d highTarget2 = finalPos.add(0, vh2, 0);
+
+            renderPathNodes.clear();
+            if (goUp.get()) {
+                buildRenderPath(startPos, highStart2);
+                buildRenderPath(highStart2, highTarget2);
+                buildRenderPath(highTarget2, finalPos);
+            } else {
+                buildRenderPath(startPos, finalPos);
+            }
+
+            int spam = 4;
+            for (int i = 0; i < spam; i++) {
+                mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, mc.player.horizontalCollision));
+            }
+            if (goUp.get()) {
+                sendMove(highStart2);
+                sendMove(highTarget2);
+            }
+            sendMove(finalPos);
+            if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+            mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
+
+            if (returnPos.get()) {
+                if (goUp.get()) {
+                    sendMove(highTarget2);
+                    sendMove(highStart2);
+                }
+                sendMove(startPos);
+                Vec3d finalClient = offsetFix.get() ? getOffset(startPos) : startPos;
+                if (offsetFix.get()) sendMove(finalClient);
+                expectedPos = finalClient;
+            } else {
+                Vec3d finalClient = offsetFix.get() ? getOffset(finalPos) : finalPos;
+                if (offsetFix.get()) sendMove(finalClient);
+                expectedPos = finalClient;
+                mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
+            }
+            return true;
+        }
+    }
+
+    // 寻找距离目标中心最近的可达点（球半径6格内）
+    private Vec3d findNearestLegalToTarget(Vec3d playerPos, Vec3d targetCenter, double radius) {
+        double bestDist = Double.MAX_VALUE;
+        Vec3d bestPos = null;
+
+        // 先整数步长粗搜
+        int intR = (int) Math.ceil(radius);
+        for (int dx = -intR; dx <= intR; dx++) {
+            for (int dy = -intR; dy <= intR; dy++) {
+                for (int dz = -intR; dz <= intR; dz++) {
+                    if (dx*dx + dy*dy + dz*dz > radius*radius) continue;
+                    Vec3d candidate = targetCenter.add(dx + 0.5, dy, dz + 0.5); // 稍微偏移避免卡墙边
+                    if (!invalid(candidate) && isWholeTpValid(playerPos, candidate)) {
+                        double dist = candidate.squaredDistanceTo(targetCenter);
+                        if (dist < bestDist) {
+                            bestDist = dist;
+                            bestPos = candidate;
+                        }
+                    }
+                }
             }
         }
+        // 若未找到，细搜0.5步长
+        if (bestPos == null) {
+            for (double dx = -radius; dx <= radius; dx += 0.5) {
+                for (double dy = -radius; dy <= radius; dy += 0.5) {
+                    for (double dz = -radius; dz <= radius; dz += 0.5) {
+                        if (dx*dx + dy*dy + dz*dz > radius*radius) continue;
+                        Vec3d candidate = targetCenter.add(dx, dy, dz);
+                        if (!invalid(candidate) && isWholeTpValid(playerPos, candidate)) {
+                            double dist = candidate.squaredDistanceTo(targetCenter);
+                            if (dist < bestDist) {
+                                bestDist = dist;
+                                bestPos = candidate;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return bestPos;
+    }
 
-        // 预检整条路径
-        Vec3d checkFrom = serverPos;
-        for (int i = 1; i < fullPath.size(); i++) {
-            Vec3d next = fullPath.get(i);
-            if (isWrongMove(checkFrom, next)) {
+    private void buildRenderPath(Vec3d from, Vec3d to) {
+        if (renderPathNodes.isEmpty()) renderPathNodes.add(from);
+        double maxDist = maxSingleTpDist.get();
+        if (maxDist > 0 && renderIntermediateNodes.get()) {
+            double dist = from.distanceTo(to);
+            if (dist > maxDist) {
+                int segments = (int) Math.ceil(dist / maxDist);
+                Vec3d direction = to.subtract(from).normalize();
+                double segLen = dist / segments;
+                Vec3d current = from;
+                for (int i = 0; i < segments; i++) {
+                    Vec3d next = current.add(direction.multiply(segLen));
+                    if (i == segments - 1) next = to;
+                    renderPathNodes.add(next);
+                    current = next;
+                }
                 return;
             }
-            checkFrom = next;
         }
+        renderPathNodes.add(to);
+    }
 
-        // 执行传送，逐步更新 expectedPos 与渲染路径
-        expectedPos = serverPos;
-        renderPathNodes.clear();
-        renderPathNodes.add(serverPos);
-
-        for (int i = 1; i < fullPath.size(); i++) {
-            Vec3d next = fullPath.get(i);
-            paperTP(expectedPos, next);
-            expectedPos = next;
-            renderPathNodes.add(next);
+    private void doPaperTP(Vec3d from, Vec3d to) {
+        double maxDist = maxSingleTpDist.get();
+        if (maxDist <= 0) {
+            paperTP(from, to);
+            return;
         }
-
-        // 攻击
-        if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
-        mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
-
-        // 回传模式下重置 expectedPos
-        if (returnPos.get()) {
-            expectedPos = null;
-        } else {
-            mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
+        double dist = from.distanceTo(to);
+        if (dist <= maxDist) {
+            paperTP(from, to);
+            return;
+        }
+        int segments = (int) Math.ceil(dist / maxDist);
+        Vec3d direction = to.subtract(from).normalize();
+        double segLen = dist / segments;
+        Vec3d current = from;
+        for (int i = 0; i < segments; i++) {
+            Vec3d next = current.add(direction.multiply(segLen));
+            if (i == segments - 1) next = to;
+            paperTP(current, next);
+            current = next;
         }
     }
 
-    private void vanillaAttack(Entity target, Vec3d serverPos, Vec3d finalPos) {
-        List<Vec3d> path = new ArrayList<>();
-        if (goUp.get()) {
-            double vh = vClipHeight.get();
-            path.add(serverPos.add(0, vh, 0));
-            path.add(finalPos.add(0, vh, 0));
-        }
-        path.add(finalPos);
-
-        renderPathNodes.clear();
-        renderPathNodes.add(serverPos);
-        renderPathNodes.addAll(path);
-
-        int spam = 4;
-        for (int i = 0; i < spam; i++) {
-            mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, mc.player.horizontalCollision));
-        }
-
-        for (Vec3d p : path) {
-            sendMove(p);
-        }
-
-        if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
-        mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
-
-        if (returnPos.get()) {
-            Collections.reverse(path);
-            for (Vec3d p : path) {
-                sendMove(p);
-            }
-            sendMove(serverPos);
-            Vec3d finalPosClient = offsetFix.get() ? getOffset(serverPos) : serverPos;
-            if (offsetFix.get()) sendMove(finalPosClient);
-            expectedPos = finalPosClient;
-        } else {
-            Vec3d finalPosClient = offsetFix.get() ? getOffset(finalPos) : finalPos;
-            if (offsetFix.get()) sendMove(finalPosClient);
-            expectedPos = finalPosClient;
-            mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
-        }
-    }
-
-    // ========== 传送方法 ==========
     private void paperTP(Vec3d from, Vec3d to) {
         if (mc.player.isSneaking()) {
             PlayerInput lastInput = mc.player.getLastPlayerInput();
@@ -441,193 +505,165 @@ public class TpAura extends Module {
         mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
     }
 
+    // ----- 服务器移动模拟（移植自 ServerUtils）-----
+    private static boolean isWholeTpValid(Vec3d startPos, Vec3d endPos) {
+        return startPos.squaredDistanceTo(endPos) < 40000.0000000000001 &&
+               !isWrongMove(startPos, endPos) &&
+               !isObstructed(endPos);
+    }
+
+    private static boolean isWrongMove(Vec3d startPos, Vec3d endPos) {
+        return getSquaredMovementDelta(startPos, endPos) > movedWronglyThreshold;
+    }
+
+    private static double getSquaredMovementDelta(Vec3d startPos, Vec3d endPos) {
+        double d0 = clampHorizontal(endPos.getX());
+        double d1 = clampVertical(endPos.getY());
+        double d2 = clampHorizontal(endPos.getZ());
+        double d6 = d0 - startPos.getX();
+        double d7 = d1 - startPos.getY();
+        double d8 = d2 - startPos.getZ();
+        Vec3d movedPos = move(startPos, new Vec3d(d6, d7, d8));
+        d6 = d0 - movedPos.x;
+        d7 = d1 - movedPos.y;
+        d8 = d2 - movedPos.z;
+        if (d7 > -0.5D || d7 < 0.5D) d7 = 0.0D;
+        return d6 * d6 + d7 * d7 + d8 * d8;
+    }
+
+    private static Vec3d move(Vec3d startPos, Vec3d movement) {
+        Vec3d vec3d = adjustMovementForCollisions(startPos, movement);
+        if (vec3d.lengthSquared() > 1.0E-7) return startPos.add(vec3d);
+        return startPos;
+    }
+
+    private static Vec3d adjustMovementForCollisions(Vec3d startPos, Vec3d movement) {
+        Box box = mc.player.getBoundingBox().offset(mc.player.getEntityPos().negate()).offset(startPos);
+        List<VoxelShape> list = mc.world.getEntityCollisions(mc.player, box.stretch(movement));
+        Vec3d vec3d = movement.lengthSquared() == 0.0 ? movement : adjustMovementForCollisions(mc.player, movement, box, mc.world, list);
+        boolean bl = movement.x != vec3d.x;
+        boolean bl2 = movement.y != vec3d.y;
+        boolean bl3 = movement.z != vec3d.z;
+        boolean bl4 = mc.player.isOnGround() || bl2 && movement.y < 0.0;
+        if (bl4 && (bl || bl3)) {
+            Vec3d vec3d2 = adjustMovementForCollisions(mc.player, new Vec3d(movement.x, 1.0, movement.z), box, mc.world, list);
+            Vec3d vec3d3 = adjustMovementForCollisions(mc.player, new Vec3d(0.0, 1.0, 0.0), box.stretch(movement.x, 0.0, movement.z), mc.world, list);
+            if (vec3d3.y < 1.0) {
+                Vec3d vec3d4 = adjustMovementForCollisions(mc.player, new Vec3d(movement.x, 0.0, movement.z), box.offset(vec3d3), mc.world, list).add(vec3d3);
+                if (vec3d4.horizontalLengthSquared() > vec3d2.horizontalLengthSquared()) vec3d2 = vec3d4;
+            }
+            if (vec3d2.horizontalLengthSquared() > vec3d.horizontalLengthSquared())
+                return vec3d2.add(adjustMovementForCollisions(mc.player, new Vec3d(0.0, -vec3d2.y + movement.y, 0.0), box.offset(vec3d2), mc.world, list));
+        }
+        return vec3d;
+    }
+
+    private static Vec3d adjustMovementForCollisions(@Nullable Entity entity, Vec3d movement, Box entityBoundingBox, World world, List<VoxelShape> collisions) {
+        ImmutableList.Builder<VoxelShape> builder = ImmutableList.builderWithExpectedSize(collisions.size() + 1);
+        if (!collisions.isEmpty()) builder.addAll(collisions);
+        WorldBorder worldBorder = world.getWorldBorder();
+        boolean bl = entity != null && worldBorder.canCollide(entity, entityBoundingBox.stretch(movement));
+        if (bl) builder.add(worldBorder.asVoxelShape());
+        builder.addAll(world.getBlockCollisions(entity, entityBoundingBox.stretch(movement)));
+        return adjustMovementForCollisions(movement, entityBoundingBox, builder.build());
+    }
+
+    private static Vec3d adjustMovementForCollisions(Vec3d movement, Box entityBoundingBox, List<VoxelShape> collisions) {
+        if (collisions.isEmpty()) return movement;
+        double d = movement.x, e = movement.y, f = movement.z;
+        if (e != 0.0) {
+            e = VoxelShapes.calculateMaxOffset(Direction.Axis.Y, entityBoundingBox, collisions, e);
+            if (e != 0.0) entityBoundingBox = entityBoundingBox.offset(0.0, e, 0.0);
+        }
+        boolean bl = Math.abs(d) < Math.abs(f);
+        if (bl && f != 0.0) {
+            f = VoxelShapes.calculateMaxOffset(Direction.Axis.Z, entityBoundingBox, collisions, f);
+            if (f != 0.0) entityBoundingBox = entityBoundingBox.offset(0.0, 0.0, f);
+        }
+        if (d != 0.0) {
+            d = VoxelShapes.calculateMaxOffset(Direction.Axis.X, entityBoundingBox, collisions, d);
+            if (!bl && d != 0.0) entityBoundingBox = entityBoundingBox.offset(d, 0.0, 0.0);
+        }
+        if (!bl && f != 0.0) f = VoxelShapes.calculateMaxOffset(Direction.Axis.Z, entityBoundingBox, collisions, f);
+        return new Vec3d(d, e, f);
+    }
+
+    private static double clampHorizontal(double d) { return MathHelper.clamp(d, -3.0E7D, 3.0E7D); }
+    private static double clampVertical(double d) { return MathHelper.clamp(d, -2.0E7D, 2.0E7D); }
+
+    private static boolean isObstructed(Vec3d pos) {
+        Box box = mc.player.getBoundingBox().offset(mc.player.getEntityPos().negate()).offset(pos);
+        box = box.expand(-0.0001, -0.0001, -0.0001);
+        for (VoxelShape v : mc.world.getBlockCollisions(mc.player, box)) return true;
+        return false;
+    }
+
+    // ---------- 杂项 ----------
     private void sendMove(Vec3d pos) {
         PlayerMoveC2SPacket packet = new PlayerMoveC2SPacket.PositionAndOnGround(pos.x, pos.y, pos.z, false, false);
         ((IPlayerMoveC2SPacket) packet).meteor$setTag(1337);
         mc.player.networkHandler.sendPacket(packet);
     }
 
-    // ========== 服务器移动模拟 ==========
-    private static final double MOVED_WRONGLY_THRESHOLD = 0.0625D;
-
-    private boolean isWrongMove(Vec3d startPos, Vec3d endPos) {
-        return getSquaredMovementDelta(startPos, endPos) > MOVED_WRONGLY_THRESHOLD;
-    }
-
-    private double getSquaredMovementDelta(Vec3d startPos, Vec3d endPos) {
-        double d0 = clampHorizontal(endPos.getX());
-        double d1 = clampVertical(endPos.getY());
-        double d2 = clampHorizontal(endPos.getZ());
-
-        double d6 = d0 - startPos.getX();
-        double d7 = d1 - startPos.getY();
-        double d8 = d2 - startPos.getZ();
-
-        Vec3d movedPos = move(startPos, new Vec3d(d6, d7, d8));
-
-        d6 = d0 - movedPos.x;
-        d7 = d1 - movedPos.y;
-        d8 = d2 - movedPos.z;
-
-        if (d7 > -0.5D || d7 < 0.5D) {
-            d7 = 0.0D;
-        }
-        return d6 * d6 + d7 * d7 + d8 * d8;
-    }
-
-    private Vec3d move(Vec3d startPos, Vec3d movement) {
-        Vec3d vec3d = adjustMovementForCollisions(startPos, movement);
-        if (vec3d.lengthSquared() > 1.0E-7) {
-            return startPos.add(vec3d);
-        }
-        return startPos;
-    }
-
-    private Vec3d adjustMovementForCollisions(Vec3d startPos, Vec3d movement) {
-        Box box = mc.player.getBoundingBox().offset(startPos.subtract(mc.player.getEntityPos()));
-        final float stepHeight = 1;
-        List<VoxelShape> list = mc.world.getEntityCollisions(mc.player, box.stretch(movement));
-        Vec3d vec3d = movement.lengthSquared() == 0.0 ? movement : adjustMovementForCollisions(mc.player, movement, box, mc.world, list);
-
-        boolean bl = movement.x != vec3d.x;
-        boolean bl2 = movement.y != vec3d.y;
-        boolean bl3 = movement.z != vec3d.z;
-        boolean bl4 = mc.player.isOnGround() || bl2 && movement.y < 0.0;
-        if (bl4 && (bl || bl3)) {
-            Vec3d vec3d2 = adjustMovementForCollisions(mc.player, new Vec3d(movement.x, stepHeight, movement.z), box, mc.world, list);
-            Vec3d vec3d3 = adjustMovementForCollisions(
-                mc.player, new Vec3d(0.0, stepHeight, 0.0), box.stretch(movement.x, 0.0, movement.z), mc.world, list
-            );
-            if (vec3d3.y < (double)stepHeight) {
-                Vec3d vec3d4 = adjustMovementForCollisions(mc.player, new Vec3d(movement.x, 0.0, movement.z), box.offset(vec3d3), mc.world, list).add(vec3d3);
-                if (vec3d4.horizontalLengthSquared() > vec3d2.horizontalLengthSquared()) {
-                    vec3d2 = vec3d4;
-                }
-            }
-
-            if (vec3d2.horizontalLengthSquared() > vec3d.horizontalLengthSquared()) {
-                return vec3d2.add(adjustMovementForCollisions(mc.player, new Vec3d(0.0, -vec3d2.y + movement.y, 0.0), box.offset(vec3d2), mc.world, list));
+    @EventHandler
+    private void onPacketReceive(PacketEvent.Receive event) {
+        if (mc.player == null || mc.world == null || !antiLag.get() || expectedPos == null) return;
+        if (event.packet instanceof PlayerPositionLookS2CPacket packet) {
+            if (System.currentTimeMillis() - lastAntiLagTime > 1000) antiLagRetries = 0;
+            Vec3d serverPos = packet.change().position();
+            double dist = serverPos.distanceTo(expectedPos);
+            if (dist > maxRange.get() || dist < 0.01) return;
+            if (antiLagRetries < 3) {
+                event.cancel();
+                mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
+                doPaperTP(serverPos, expectedPos);
+                antiLagRetries++;
+                lastAntiLagTime = System.currentTimeMillis();
+            } else {
+                expectedPos = null;
             }
         }
-
-        return vec3d;
     }
 
-    private Vec3d adjustMovementForCollisions(@Nullable Entity entity, Vec3d movement, Box entityBoundingBox, World world, List<VoxelShape> collisions) {
-        ImmutableList.Builder<VoxelShape> builder = ImmutableList.builderWithExpectedSize(collisions.size() + 1);
-        if (!collisions.isEmpty()) {
-            builder.addAll(collisions);
+    @EventHandler
+    private void onRender(Render3DEvent event) {
+        // 目标碰撞箱（只有成功锁定的目标才绘制）
+        if (currentTarget != null) {
+            event.renderer.box(currentTarget.getBoundingBox(), targetColor.get(), targetColor.get(), ShapeMode.Lines, 0);
         }
 
-        WorldBorder worldBorder = world.getWorldBorder();
-        boolean bl = entity != null && worldBorder.canCollide(entity, entityBoundingBox.stretch(movement));
-        if (bl) {
-            builder.add(worldBorder.asVoxelShape());
-        }
-
-        builder.addAll(world.getBlockCollisions(entity, entityBoundingBox.stretch(movement)));
-        return adjustMovementForCollisions(movement, entityBoundingBox, builder.build());
-    }
-
-    private Vec3d adjustMovementForCollisions(Vec3d movement, Box entityBoundingBox, List<VoxelShape> collisions) {
-        if (collisions.isEmpty()) {
-            return movement;
-        } else {
-            double d = movement.x;
-            double e = movement.y;
-            double f = movement.z;
-            if (e != 0.0) {
-                e = VoxelShapes.calculateMaxOffset(Direction.Axis.Y, entityBoundingBox, collisions, e);
-                if (e != 0.0) {
-                    entityBoundingBox = entityBoundingBox.offset(0.0, e, 0.0);
-                }
+        // 路径渲染
+        if (renderPath.get() && !renderPathNodes.isEmpty()) {
+            // 节点：0.25 实心方块
+            for (Vec3d node : renderPathNodes) {
+                Box nodeBox = new Box(
+                    node.x - 0.125, node.y - 0.125, node.z - 0.125,
+                    node.x + 0.125, node.y + 0.125, node.z + 0.125
+                );
+                event.renderer.box(nodeBox, pathColor.get(), pathColor.get(), ShapeMode.Sides, 0);
             }
 
-            boolean bl = Math.abs(d) < Math.abs(f);
-            if (bl && f != 0.0) {
-                f = VoxelShapes.calculateMaxOffset(Direction.Axis.Z, entityBoundingBox, collisions, f);
-                if (f != 0.0) {
-                    entityBoundingBox = entityBoundingBox.offset(0.0, 0.0, f);
-                }
+            // 连线
+            for (int i = 0; i < renderPathNodes.size() - 1; i++) {
+                Vec3d n1 = renderPathNodes.get(i);
+                Vec3d n2 = renderPathNodes.get(i + 1);
+                event.renderer.line(n1.x, n1.y, n1.z, n2.x, n2.y, n2.z, pathColor.get());
             }
 
-            if (d != 0.0) {
-                d = VoxelShapes.calculateMaxOffset(Direction.Axis.X, entityBoundingBox, collisions, d);
-                if (!bl && d != 0.0) {
-                    entityBoundingBox = entityBoundingBox.offset(d, 0.0, 0.0);
-                }
-            }
-
-            if (!bl && f != 0.0) {
-                f = VoxelShapes.calculateMaxOffset(Direction.Axis.Z, entityBoundingBox, collisions, f);
-            }
-
-            return new Vec3d(d, e, f);
-        }
-    }
-
-    private static double clampHorizontal(double d) {
-        return MathHelper.clamp(d, -3.0E7D, 3.0E7D);
-    }
-
-    private static double clampVertical(double d) {
-        return MathHelper.clamp(d, -2.0E7D, 2.0E7D);
-    }
-
-    // ========== 合法性检查 ==========
-    private boolean isObstructed(Vec3d pos) {
-        Box box = mc.player.getBoundingBox().offset(pos.subtract(mc.player.getEntityPos()));
-        box = box.expand(-0.0001, -0.0001, -0.0001);
-        for (VoxelShape v : mc.world.getBlockCollisions(mc.player, box)) {
-            return true;
-        }
-        return false;
-    }
-
-    private boolean isPositionValid(Vec3d pos, Vec3d from) {
-        return from.squaredDistanceTo(pos) < 100.0000000000001 && !isObstructed(pos) && !isWrongMove(from, pos);
-    }
-
-    // ========== 目标搜索（改为优先靠近目标） ==========
-    private Vec3d findBestAttackPos(Vec3d targetPos, Vec3d playerPos, double radius) {
-        BlockPos center = BlockPos.ofFloored(targetPos.x, targetPos.y, targetPos.z);
-        int r = (int) Math.ceil(radius);
-        Vec3d best = null;
-        double bestDistToTarget = Double.MAX_VALUE;
-
-        for (int dx = -r; dx <= r; dx++) {
-            for (int dy = -r; dy <= r; dy++) {
-                for (int dz = -r; dz <= r; dz++) {
-                    BlockPos bp = center.add(dx, dy, dz);
-                    Vec3d stand = Vec3d.ofBottomCenter(bp).add(0, 1, 0);
-                    double distToTarget = stand.distanceTo(targetPos);
-                    if (distToTarget > radius) continue; // 必须小于6格
-
-                    if (isPositionValid(stand, playerPos)) {
-                        if (distToTarget < bestDistToTarget) {
-                            bestDistToTarget = distToTarget;
-                            best = stand;
-                        }
-                    }
-                }
+            // 最后一条线连接到目标碰撞箱中心
+            if (currentTarget != null) {
+                Vec3d lastNode = renderPathNodes.get(renderPathNodes.size() - 1);
+                Vec3d targetCenter = currentTarget.getBoundingBox().getCenter();
+                event.renderer.line(lastNode.x, lastNode.y, lastNode.z, targetCenter.x, targetCenter.y, targetCenter.z, targetColor.get());
             }
         }
-        return best;
     }
 
-    // ========== 辅助方法 ==========
     private Vec3d getOffset(Vec3d base) {
         double dx = 0.05, dy = 0.01;
-        List<Vec3d> offsets = Arrays.asList(
-            base.add(dx, dy, 0),
-            base.add(-dx, dy, 0),
-            base.add(0, dy, dx),
-            base.add(0, dy, -dx)
-        );
+        List<Vec3d> offsets = Arrays.asList(base.add(dx, dy, 0), base.add(-dx, dy, 0), base.add(0, dy, dx), base.add(0, dy, -dx));
         Collections.shuffle(offsets);
-        for (Vec3d pos : offsets) {
-            if (!invalid(pos)) return pos;
-        }
+        for (Vec3d pos : offsets) if (!invalid(pos)) return pos;
         return base.add(0, dy, 0);
     }
 
@@ -647,16 +683,13 @@ public class TpAura extends Module {
         if (!(entity instanceof LivingEntity) || !entity.isAlive() || entity == mc.player) return false;
         if (!entities.get().contains(entity.getType())) return false;
         if (mc.player.distanceTo(entity) > maxRange.get()) return false;
-
         if (enableYFilter.get()) {
             double y = entity.getY();
             if (y < minY.get() || y > maxY.get()) return false;
         }
-
         if (ignoreFriends.get() && entity instanceof PlayerEntity p && Friends.get().isFriend(p)) return false;
         if (ignoreNamed.get() && entity.hasCustomName()) return false;
         if (ignoreTamed.get() && entity instanceof TameableEntity tameable && tameable.isTamed()) return false;
-
         if (entity instanceof PlayerEntity p) {
             if (p.isCreative() || p.isSpectator()) return false;
             if (!Friends.get().shouldAttack(p)) return false;
@@ -666,70 +699,6 @@ public class TpAura extends Module {
             if (listMode.get() == ListMode.Blacklist && list.contains(name)) return false;
         }
         return true;
-    }
-
-    @EventHandler
-    private void onPacketReceive(PacketEvent.Receive event) {
-        if (mc.player == null || mc.world == null || !antiLag.get() || expectedPos == null) return;
-        if (event.packet instanceof PlayerPositionLookS2CPacket packet) {
-            if (System.currentTimeMillis() - lastAntiLagTime > 1000) antiLagRetries = 0;
-
-            Vec3d serverPos = packet.change().position();
-            double dist = serverPos.distanceTo(expectedPos);
-            if (dist > maxRange.get() || dist < 0.01) return;
-
-            if (antiLagRetries < 3) {
-                event.cancel();
-                mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
-                paperTP(serverPos, expectedPos);
-                antiLagRetries++;
-                lastAntiLagTime = System.currentTimeMillis();
-            } else {
-                expectedPos = null;
-            }
-        }
-    }
-
-    @EventHandler
-    private void onRender(Render3DEvent event) {
-        // 渲染目标碰撞箱（保持原样）
-        if (currentTarget != null) {
-            event.renderer.box(currentTarget.getBoundingBox(), targetColor.get(), targetColor.get(), ShapeMode.Lines, 0);
-        }
-
-        // 渲染传送路径
-        if (renderPath.get() && !renderPathNodes.isEmpty()) {
-            double halfSize = 0.125; // 0.25 边长的一半
-            SettingColor color = pathColor.get();
-
-            // 绘制路径节点连线
-            for (int i = 0; i < renderPathNodes.size() - 1; i++) {
-                Vec3d n1 = renderPathNodes.get(i);
-                Vec3d n2 = renderPathNodes.get(i + 1);
-                event.renderer.line(n1.x, n1.y, n1.z, n2.x, n2.y, n2.z, color);
-            }
-
-            // 绘制路径节点实心方块
-            for (Vec3d n : renderPathNodes) {
-                event.renderer.box(
-                    n.x - halfSize, n.y - halfSize, n.z - halfSize,
-                    n.x + halfSize, n.y + halfSize, n.z + halfSize,
-                    color, color, ShapeMode.Both, 0
-                );
-            }
-
-            // 如果有目标，连接最后一个节点到目标碰撞箱中心，并绘制目标中心方块
-            if (currentTarget != null) {
-                Vec3d targetCenter = currentTarget.getBoundingBox().getCenter();
-                Vec3d lastNode = renderPathNodes.get(renderPathNodes.size() - 1);
-                event.renderer.line(lastNode.x, lastNode.y, lastNode.z, targetCenter.x, targetCenter.y, targetCenter.z, color);
-                event.renderer.box(
-                    targetCenter.x - halfSize, targetCenter.y - halfSize, targetCenter.z - halfSize,
-                    targetCenter.x + halfSize, targetCenter.y + halfSize, targetCenter.z + halfSize,
-                    targetColor.get(), targetColor.get(), ShapeMode.Both, 0
-                );
-            }
-        }
     }
 
     @Override
