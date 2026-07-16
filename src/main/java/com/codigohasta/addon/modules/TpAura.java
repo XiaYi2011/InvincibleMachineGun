@@ -30,7 +30,6 @@ import net.minecraft.network.packet.c2s.play.PlayerInteractEntityC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
-import net.minecraft.util.PlayerInput;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
@@ -63,7 +62,7 @@ public class TpAura extends Module {
         .name("挥手").defaultValue(true).build());
     private final Setting<Boolean> silentSwap = sgGeneral.add(new BoolSetting.Builder()
         .name("静默切换").description("使用数据包切换武器（无动画、无声音），其他玩家更难察觉。切换时会在客户端显示武器图标。")
-        .defaultValue(true).visible(() -> autoSwitch.get()).build());
+        .defaultValue(true).visible(autoSwitch::get).build());
 
     // --- 3. TP Settings ---
     public enum Mode { Vanilla, Paper }
@@ -373,27 +372,22 @@ public class TpAura extends Module {
      * 复刻 ICTP 的 PaperTP 逻辑，保证在 Paper 服务器下不回弹。
      */
     private void paperTP(Vec3d from, Vec3d to) {
-        if (mc.player.isShiftKeyDown()) {
-            PlayerInput lastInput = mc.player.getLastSentInput();
-            PlayerInput input = new PlayerInput(
-                lastInput.forward(),
-                lastInput.backward(),
-                lastInput.left(),
-                lastInput.right(),
-                lastInput.jump(),
-                false,
-                lastInput.sprint()
-            );
-            mc.player.connection.send(new PlayerInputC2SPacket(input));
+        if (mc.player.isSneaking()) {
+            mc.player.networkHandler.sendPacket(new PlayerInputC2SPacket(
+                mc.player.input.movementSideways,
+                mc.player.input.movementForward,
+                mc.player.input.jumping,
+                mc.player.input.sneaking
+            ));
         }
 
         double distance = from.distanceTo(to);
         int packetsRequired = (int) Math.ceil(Math.abs(distance / 10));
         for (int packetNumber = 0; packetNumber < (packetsRequired - 1); packetNumber++) {
-            mc.player.connection.send(new PlayerMoveC2SPacket.OnGroundOnly(true, mc.player.horizontalCollision));
+            mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(true, mc.player.horizontalCollision));
         }
 
-        mc.player.connection.send(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
+        mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
     }
 
     private void sendMove(Vec3d pos) {
