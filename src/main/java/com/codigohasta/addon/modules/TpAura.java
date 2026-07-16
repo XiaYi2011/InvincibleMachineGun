@@ -54,13 +54,6 @@ public class TpAura extends Module {
         .sliderMax(5000)
         .build());
 
-    // 移动时暂停攻击
-    private final Setting<Boolean> pauseOnMove = sgTiming.add(new BoolSetting.Builder()
-        .name("移动时暂停")
-        .description("当玩家移动时不进行攻击，避免干扰走路")
-        .defaultValue(true)
-        .build());
-
     // 武器设置
     private final Setting<Boolean> autoSwitch = sgGeneral.add(new BoolSetting.Builder()
         .name("自动切武器").defaultValue(true).build());
@@ -214,12 +207,6 @@ public class TpAura extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
 
-        // 移动时暂停
-        if (pauseOnMove.get() && isPlayerMoving()) {
-            swapBackWeapon();
-            return;
-        }
-
         if (System.currentTimeMillis() < nextAttackTime) {
             swapBackWeapon();
             return;
@@ -240,12 +227,6 @@ public class TpAura extends Module {
         swapBackWeapon();
 
         nextAttackTime = System.currentTimeMillis() + attackDelayMs.get();
-    }
-
-    private boolean isPlayerMoving() {
-        if (mc.player == null) return false;
-        PlayerInput input = mc.player.input.playerInput;
-        return input.forward() || input.backward() || input.left() || input.right();
     }
 
     private void executeTrouserAttack(Entity target) {
@@ -294,28 +275,24 @@ public class TpAura extends Module {
                 paperTP(currentServerPos, startPos);
                 currentServerPos = startPos;
 
-                // 客户端位置同步
                 if (offsetFix.get()) {
                     Vec3d offset = getOffset(startPos);
                     paperTP(currentServerPos, offset);
-                    mc.player.updatePosition(offset.x, offset.y, offset.z);
+                    antiLagTarget = offset;
                 } else {
-                    mc.player.updatePosition(startPos.x, startPos.y, startPos.z);
+                    antiLagTarget = startPos;
                 }
-                antiLagTarget = offsetFix.get() ? getOffset(startPos) : startPos; // 反拉回目标
             } else {
                 if (offsetFix.get()) {
                     Vec3d offset = getOffset(finalPos);
                     paperTP(currentServerPos, offset);
-                    mc.player.updatePosition(offset.x, offset.y, offset.z);
+                    antiLagTarget = offset;
                 } else {
-                    mc.player.updatePosition(finalPos.x, finalPos.y, finalPos.z);
+                    antiLagTarget = finalPos;
                 }
-                antiLagTarget = offsetFix.get() ? getOffset(finalPos) : finalPos; // 反拉回目标
             }
-            mc.player.setVelocity(0, 0, 0);
         } else {
-            // Vanilla 模式保持不变
+            // Vanilla 模式
             int spam = 4;
             for (int i = 0; i < spam; i++) {
                 mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, mc.player.horizontalCollision));
@@ -336,12 +313,10 @@ public class TpAura extends Module {
                 sendMove(startPos);
                 Vec3d finalPosClient = offsetFix.get() ? getOffset(startPos) : startPos;
                 if (offsetFix.get()) sendMove(finalPosClient);
-                mc.player.updatePosition(finalPosClient.x, finalPosClient.y, finalPosClient.z);
                 antiLagTarget = finalPosClient;
             } else {
                 Vec3d finalPosClient = offsetFix.get() ? getOffset(finalPos) : finalPos;
                 if (offsetFix.get()) sendMove(finalPosClient);
-                mc.player.updatePosition(finalPosClient.x, finalPosClient.y, finalPosClient.z);
                 antiLagTarget = finalPosClient;
             }
         }
@@ -391,9 +366,8 @@ public class TpAura extends Module {
             event.cancel();
             mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
 
-            // 重新传送到反拉回目标位置
+            // 重新传送到反拉回目标位置（仅发包）
             paperTP(serverPos, antiLagTarget);
-            mc.player.updatePosition(antiLagTarget.x, antiLagTarget.y, antiLagTarget.z);
         }
     }
 
