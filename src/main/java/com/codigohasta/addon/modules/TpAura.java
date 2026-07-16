@@ -275,8 +275,8 @@ public class TpAura extends Module {
         // 确定服务器认为的当前位置（用于起点与目标搜索）
         Vec3d serverPos = (expectedPos != null && expectedPos.squaredDistanceTo(playerPos) < 100.0) ? expectedPos : playerPos;
 
-        // 在目标半径6格球体内寻找最靠近玩家（服务器位置）的合法站立点
-        Vec3d finalPos = findClosestValidPosInSphere(targetPos, serverPos, 6.0);
+        // 在目标半径6格球体内寻找最靠近目标的合法站立点（而非靠近玩家）
+        Vec3d finalPos = findBestAttackPos(targetPos, serverPos, 6.0);
         if (finalPos == null) return;
 
         if (mode.get() == Mode.Paper) {
@@ -341,12 +341,12 @@ public class TpAura extends Module {
             }
         }
 
-        // 预检整条路径（从 serverPos 开始逐段模拟）
+        // 预检整条路径
         Vec3d checkFrom = serverPos;
         for (int i = 1; i < fullPath.size(); i++) {
             Vec3d next = fullPath.get(i);
             if (isWrongMove(checkFrom, next)) {
-                return; // 预检失败，放弃攻击
+                return;
             }
             checkFrom = next;
         }
@@ -367,17 +367,15 @@ public class TpAura extends Module {
         if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
         mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
-        // 回传模式下重置 expectedPos，让下次攻击从玩家实际位置开始
+        // 回传模式下重置 expectedPos
         if (returnPos.get()) {
             expectedPos = null;
         } else {
-            // 不回传时同步客户端位置
             mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
         }
     }
 
     private void vanillaAttack(Entity target, Vec3d serverPos, Vec3d finalPos) {
-        // Vanilla 模式保留原逻辑，但同样使用统一 serverPos 和路径
         List<Vec3d> path = new ArrayList<>();
         if (goUp.get()) {
             double vh = vClipHeight.get();
@@ -590,24 +588,24 @@ public class TpAura extends Module {
         return from.squaredDistanceTo(pos) < 100.0000000000001 && !isObstructed(pos) && !isWrongMove(from, pos);
     }
 
-    // ========== 目标搜索 ==========
-    private Vec3d findClosestValidPosInSphere(Vec3d targetPos, Vec3d playerPos, double radius) {
+    // ========== 目标搜索（改为优先靠近目标） ==========
+    private Vec3d findBestAttackPos(Vec3d targetPos, Vec3d playerPos, double radius) {
         BlockPos center = BlockPos.ofFloored(targetPos.x, targetPos.y, targetPos.z);
         int r = (int) Math.ceil(radius);
         Vec3d best = null;
-        double bestDistSq = Double.MAX_VALUE;
+        double bestDistToTarget = Double.MAX_VALUE;
 
         for (int dx = -r; dx <= r; dx++) {
             for (int dy = -r; dy <= r; dy++) {
                 for (int dz = -r; dz <= r; dz++) {
                     BlockPos bp = center.add(dx, dy, dz);
                     Vec3d stand = Vec3d.ofBottomCenter(bp).add(0, 1, 0);
-                    if (stand.distanceTo(targetPos) > radius) continue;
+                    double distToTarget = stand.distanceTo(targetPos);
+                    if (distToTarget > radius) continue; // 必须小于6格
 
                     if (isPositionValid(stand, playerPos)) {
-                        double distSq = playerPos.squaredDistanceTo(stand);
-                        if (distSq < bestDistSq) {
-                            bestDistSq = distSq;
+                        if (distToTarget < bestDistToTarget) {
+                            bestDistToTarget = distToTarget;
                             best = stand;
                         }
                     }
@@ -683,32 +681,53 @@ public class TpAura extends Module {
             if (antiLagRetries < 3) {
                 event.cancel();
                 mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
-                paperTP(serverPos, expectedPos);  // 重试从当前服务器位置到期望位置
+                paperTP(serverPos, expectedPos);
                 antiLagRetries++;
                 lastAntiLagTime = System.currentTimeMillis();
             } else {
-                expectedPos = null; // 放弃
+                expectedPos = null;
             }
         }
     }
 
     @EventHandler
     private void onRender(Render3DEvent event) {
+        // 渲染目标碰撞箱（保持原样）
         if (currentTarget != null) {
             event.renderer.box(currentTarget.getBoundingBox(), targetColor.get(), targetColor.get(), ShapeMode.Lines, 0);
         }
+
+        // 渲染传送路径
         if (renderPath.get() && !renderPathNodes.isEmpty()) {
-            // 绘制路径连线
+            double halfSize = 0.125; // 0.25 边长的一半
+            SettingColor color = pathColor.get();
+
+            // 绘制路径节点连线
             for (int i = 0; i < renderPathNodes.size() - 1; i++) {
                 Vec3d n1 = renderPathNodes.get(i);
                 Vec3d n2 = renderPathNodes.get(i + 1);
-                event.renderer.line(n1.x, n1.y + 1, n1.z, n2.x, n2.y + 1, n2.z, pathColor.get());
+                event.renderer.line(n1.x, n1.y, n1.z, n2.x, n2.y, n2.z, color);
             }
-            // 绘制每个端点（0.25 大小的实心方块）
-            double half = 0.125;
-            for (Vec3d node : renderPathNodes) {
-                Box box = new Box(node.x - half, node.y - half, node.z - half, node.x + half, node.y + half, node.z + half);
-                event.renderer.box(box, pathColor.get(), pathColor.get(), ShapeMode.Sides, 0);
+
+            // 绘制路径节点实心方块
+            for (Vec3d n : renderPathNodes) {
+                event.renderer.box(
+                    n.x - halfSize, n.y - halfSize, n.z - halfSize,
+                    n.x + halfSize, n.y + halfSize, n.z + halfSize,
+                    color, color, ShapeMode.Both, 0
+                );
+            }
+
+            // 如果有目标，连接最后一个节点到目标碰撞箱中心，并绘制目标中心方块
+            if (currentTarget != null) {
+                Vec3d targetCenter = currentTarget.getBoundingBox().getCenter();
+                Vec3d lastNode = renderPathNodes.get(renderPathNodes.size() - 1);
+                event.renderer.line(lastNode.x, lastNode.y, lastNode.z, targetCenter.x, targetCenter.y, targetCenter.z, color);
+                event.renderer.box(
+                    targetCenter.x - halfSize, targetCenter.y - halfSize, targetCenter.z - halfSize,
+                    targetCenter.x + halfSize, targetCenter.y + halfSize, targetCenter.z + halfSize,
+                    targetColor.get(), targetColor.get(), ShapeMode.Both, 0
+                );
             }
         }
     }
