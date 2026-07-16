@@ -23,10 +23,8 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.passive.TameableEntity;
-import net.minecraft.entity.player.Input;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.network.packet.c2s.play.CloseHandledScreenC2SPacket;
-import net.minecraft.network.packet.c2s.play.PlayerInputC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerInteractEntityC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.screen.slot.SlotActionType;
@@ -383,26 +381,14 @@ public class TpAura extends Module {
 
     /**
      * Paper模式的传送逻辑，使用原版PlayerMoveC2SPacket，但具有与ICTP相同的防回弹效果。
+     * 省略潜行修正以避免Input类在不同映射下的兼容性问题。
      */
     private void paperTP(Vec3d from, Vec3d to) {
-        if (mc.player.isShiftKeyDown()) {
-            Input currentInput = mc.player.input;
-            Input input = new Input(
-                currentInput.movementForward,
-                currentInput.movementSideways,
-                currentInput.jumping,
-                false, // sneaking = false
-                currentInput.sprinting
-            );
-            mc.player.connection.send(new PlayerInputC2SPacket(input));
-        }
-
         double distance = from.distanceTo(to);
         int packetsRequired = (int) Math.ceil(Math.abs(distance / 10));
         for (int packetNumber = 0; packetNumber < (packetsRequired - 1); packetNumber++) {
             mc.player.connection.send(new PlayerMoveC2SPacket.OnGroundOnly(true, mc.player.horizontalCollision));
         }
-
         mc.player.connection.send(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
     }
 
