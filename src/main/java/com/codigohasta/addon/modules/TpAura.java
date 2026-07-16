@@ -370,12 +370,13 @@ public class TpAura extends Module {
 
     /**
      * 复刻 ICTP 的 PaperTP 逻辑，保证在 Paper 服务器下不回弹。
+     * 修复：将 input 字段名从 movementSideways/movementForward 改为 sideways/forward
      */
     private void paperTP(Vec3d from, Vec3d to) {
         if (mc.player.isSneaking()) {
             mc.player.networkHandler.sendPacket(new PlayerInputC2SPacket(
-                mc.player.input.movementSideways,
-                mc.player.input.movementForward,
+                mc.player.input.sideways,
+                mc.player.input.forward,
                 mc.player.input.jumping,
                 mc.player.input.sneaking
             ));
