@@ -386,15 +386,13 @@ public class TpAura extends Module {
      */
     private void paperTP(Vec3d from, Vec3d to) {
         if (mc.player.isShiftKeyDown()) {
-            Input lastInput = mc.player.getLastSentInput();
+            Input currentInput = mc.player.input;
             Input input = new Input(
-                lastInput.forward(),
-                lastInput.backward(),
-                lastInput.left(),
-                lastInput.right(),
-                lastInput.jump(),
-                false,
-                lastInput.sprint()
+                currentInput.movementForward,
+                currentInput.movementSideways,
+                currentInput.jumping,
+                false, // sneaking = false
+                currentInput.sprinting
             );
             mc.player.connection.send(new PlayerInputC2SPacket(input));
         }
