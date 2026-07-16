@@ -23,6 +23,7 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.passive.TameableEntity;
+import net.minecraft.entity.player.Input;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.network.packet.c2s.play.CloseHandledScreenC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerInputC2SPacket;
@@ -33,6 +34,7 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
+
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -62,7 +64,7 @@ public class TpAura extends Module {
         .name("挥手").defaultValue(true).build());
     private final Setting<Boolean> silentSwap = sgGeneral.add(new BoolSetting.Builder()
         .name("静默切换").description("使用数据包切换武器（无动画、无声音），其他玩家更难察觉。切换时会在客户端显示武器图标。")
-        .defaultValue(true).visible(autoSwitch::get).build());
+        .defaultValue(true).visible(() -> autoSwitch.get()).build());
 
     // --- 3. TP Settings ---
     public enum Mode { Vanilla, Paper }
@@ -79,7 +81,7 @@ public class TpAura extends Module {
     private final Setting<Boolean> offsetFix = sgTP.add(new BoolSetting.Builder()
         .name("偏移同步").description("发送微小偏移包防止拉回，但可能导致卡住").defaultValue(true).build());
 
-    // --- 4. 目标与过滤设置 ---
+    // --- 4. Targeting Settings ---
     private final Setting<Set<EntityType<?>>> entities = sgTargeting.add(new EntityTypeListSetting.Builder()
         .name("目标实体").defaultValue(Collections.singleton(EntityType.PLAYER)).build());
 
@@ -90,13 +92,28 @@ public class TpAura extends Module {
     private final Setting<Boolean> ignoreTamed = sgTargeting.add(new BoolSetting.Builder()
         .name("忽略驯服").defaultValue(false).description("开启后不将驯服的生物设为攻击目标").build());
 
-    // Y轴过滤功能
-    private final Setting<Boolean> yFilter = sgTargeting.add(new BoolSetting.Builder()
-        .name("Y轴过滤").defaultValue(false).description("开启后只攻击指定Y坐标范围内的实体").build());
+    // Y轴过滤
+    private final Setting<Boolean> enableYFilter = sgTargeting.add(new BoolSetting.Builder()
+        .name("启用Y轴过滤")
+        .description("只攻击Y坐标在指定范围内的目标")
+        .defaultValue(false)
+        .build());
     private final Setting<Double> minY = sgTargeting.add(new DoubleSetting.Builder()
-        .name("最小Y").defaultValue(-64.0).min(-64.0).sliderMax(320.0).visible(yFilter::get).build());
+        .name("最小Y")
+        .description("目标的最低Y坐标")
+        .defaultValue(-64)
+        .min(-2032)
+        .max(2032)
+        .visible(enableYFilter::get)
+        .build());
     private final Setting<Double> maxY = sgTargeting.add(new DoubleSetting.Builder()
-        .name("最大Y").defaultValue(320.0).min(-64.0).sliderMax(320.0).visible(yFilter::get).build());
+        .name("最大Y")
+        .description("目标的最高Y坐标")
+        .defaultValue(320)
+        .min(-2032)
+        .max(2032)
+        .visible(enableYFilter::get)
+        .build());
 
     public enum ListMode { Whitelist, Blacklist, Off }
     private final Setting<ListMode> listMode = sgWhitelist.add(new EnumSetting.Builder<ListMode>()
@@ -115,10 +132,10 @@ public class TpAura extends Module {
         .name("图腾绕过").description("连续多次攻击以突破图腾无敌帧，仅Paper模式有效").defaultValue(false).build());
     private final Setting<Integer> totemAttacks = sgTotem.add(new IntSetting.Builder()
         .name("攻击次数").description("连续攻击次数(1-3)").defaultValue(2).min(1).max(3).sliderRange(1, 3)
-        .visible(totemBypass::get).build());
+        .visible(() -> totemBypass.get()).build());
     private final Setting<Integer> totemHeightIncrease = sgTotem.add(new IntSetting.Builder()
         .name("递增高度").description("每次额外攻击增加的下落高度").defaultValue(9).min(1).sliderRange(1, 100)
-        .visible(totemBypass::get).build());
+        .visible(() -> totemBypass.get()).build());
 
     private final List<Entity> targets = new ArrayList<>();
     private final List<Vec3d> renderPathNodes = new ArrayList<>();
@@ -126,7 +143,7 @@ public class TpAura extends Module {
     private int originalSlot = -1;
     private int silentSwapSlot = -1;
     private int silentSwapPrevSlot = -1;
-    private long nextAttackTime = 0; // 下次允许攻击的时间戳
+    private long nextAttackTime = 0;
 
     public TpAura() {
         super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。抄袭了裤子条纹的tp。娱乐功能");
@@ -210,7 +227,6 @@ public class TpAura extends Module {
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
-        // 检查冷却
         if (System.currentTimeMillis() < nextAttackTime) {
             swapBackWeapon();
             return;
@@ -232,7 +248,6 @@ public class TpAura extends Module {
         executeTrouserAttack(currentTarget);
         swapBackWeapon();
 
-        // 设置下次攻击时间
         nextAttackTime = System.currentTimeMillis() + attackDelayMs.get();
     }
 
@@ -256,7 +271,6 @@ public class TpAura extends Module {
         renderPathNodes.add(finalPos);
 
         if (mode.get() == Mode.Paper) {
-            // --- Paper 模式：使用 paperTP 垫包传送 ---
             Vec3d currentServerPos = startPos;
 
             if (totemBypass.get()) {
@@ -300,7 +314,6 @@ public class TpAura extends Module {
                 mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
             }
 
-            // 回传或停留，并应用偏移
             if (returnPos.get()) {
                 if (goUp.get() && !totemBypass.get()) {
                     paperTP(currentServerPos, highTarget);
@@ -330,7 +343,7 @@ public class TpAura extends Module {
                 mc.player.setVelocity(0, 0, 0);
             }
         } else {
-            // --- Vanilla 模式：原逻辑 ---
+            // Vanilla mode
             int spam = 4;
             for (int i = 0; i < spam; i++) {
                 mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, mc.player.horizontalCollision));
@@ -369,26 +382,30 @@ public class TpAura extends Module {
     }
 
     /**
-     * 复刻 ICTP 的 PaperTP 逻辑，保证在 Paper 服务器下不回弹。
-     * 在 1.21 中，Input 字段名已更新：movementSideways -> sideways, movementForward -> forward
+     * Paper模式的传送逻辑，使用原版PlayerMoveC2SPacket，但具有与ICTP相同的防回弹效果。
      */
     private void paperTP(Vec3d from, Vec3d to) {
-        if (mc.player.isSneaking()) {
-            mc.player.networkHandler.sendPacket(new PlayerInputC2SPacket(
-                mc.player.input.sideways,
-                mc.player.input.forward,
-                mc.player.input.jumping,
-                mc.player.input.sneaking
-            ));
+        if (mc.player.isShiftKeyDown()) {
+            Input lastInput = mc.player.getLastSentInput();
+            Input input = new Input(
+                lastInput.forward(),
+                lastInput.backward(),
+                lastInput.left(),
+                lastInput.right(),
+                lastInput.jump(),
+                false,
+                lastInput.sprint()
+            );
+            mc.player.connection.send(new PlayerInputC2SPacket(input));
         }
 
         double distance = from.distanceTo(to);
         int packetsRequired = (int) Math.ceil(Math.abs(distance / 10));
         for (int packetNumber = 0; packetNumber < (packetsRequired - 1); packetNumber++) {
-            mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(true, mc.player.horizontalCollision));
+            mc.player.connection.send(new PlayerMoveC2SPacket.OnGroundOnly(true, mc.player.horizontalCollision));
         }
 
-        mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
+        mc.player.connection.send(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
     }
 
     private void sendMove(Vec3d pos) {
@@ -449,9 +466,10 @@ public class TpAura extends Module {
         if (!entities.get().contains(entity.getType())) return false;
         if (mc.player.distanceTo(entity) > maxRange.get()) return false;
 
-        // --- 应用 Y轴过滤逻辑 ---
-        if (yFilter.get()) {
-            if (entity.getY() < minY.get() || entity.getY() > maxY.get()) return false;
+        // Y轴过滤
+        if (enableYFilter.get()) {
+            double y = entity.getY();
+            if (y < minY.get() || y > maxY.get()) return false;
         }
 
         if (ignoreFriends.get() && entity instanceof PlayerEntity p && Friends.get().isFriend(p)) return false;
