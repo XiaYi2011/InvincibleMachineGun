@@ -3,6 +3,7 @@ package com.codigohasta.addon.modules;
 import com.codigohasta.addon.AddonTemplate;
 import com.codigohasta.addon.mixin.InventoryAccessor;
 import com.codigohasta.addon.utils.leaveshack.InventoryUtil;
+import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.mixininterface.IPlayerMoveC2SPacket;
@@ -24,10 +25,8 @@ import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.passive.TameableEntity;
 import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.network.packet.c2s.play.CloseHandledScreenC2SPacket;
-import net.minecraft.network.packet.c2s.play.PlayerInputC2SPacket;
-import net.minecraft.network.packet.c2s.play.PlayerInteractEntityC2SPacket;
-import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
+import net.minecraft.network.packet.c2s.play.*;
+import net.minecraft.network.packet.s2c.play.PlayerPositionLookS2CPacket;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
 import net.minecraft.util.PlayerInput;
@@ -41,12 +40,12 @@ import java.util.stream.Collectors;
 public class TpAura extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgTiming = settings.createGroup("攻击机制");
-    private final SettingGroup sgTP = settings.createGroup("打击");
+    private final SettingGroup sgTP = settings.createGroup("传送");
     private final SettingGroup sgTargeting = settings.createGroup("目标");
     private final SettingGroup sgWhitelist = settings.createGroup("白名单");
     private final SettingGroup sgRender = settings.createGroup("渲染");
 
-    // 额外延迟（毫秒） - 真正支持毫秒级
+    // 攻击延迟（毫秒）
     private final Setting<Integer> attackDelayMs = sgTiming.add(new IntSetting.Builder()
         .name("额外延迟(ms)")
         .description("每次攻击后的冷却时间，单位毫秒")
@@ -55,16 +54,14 @@ public class TpAura extends Module {
         .sliderMax(5000)
         .build());
 
-    // 最大攻击频率限制（防止发包过快）
-    private final Setting<Integer> maxAttacksPerFrame = sgTiming.add(new IntSetting.Builder()
-        .name("每帧最大攻击次数")
-        .description("单帧内最多连续攻击的次数（防止在极高 FPS 下发包过密）")
-        .defaultValue(1)
-        .min(1)
-        .sliderMax(20)
+    // 移动时暂停攻击
+    private final Setting<Boolean> pauseOnMove = sgTiming.add(new BoolSetting.Builder()
+        .name("移动时暂停")
+        .description("当玩家移动时不进行攻击，避免干扰走路")
+        .defaultValue(true)
         .build());
 
-    // --- 2. General Settings ---
+    // 武器设置
     private final Setting<Boolean> autoSwitch = sgGeneral.add(new BoolSetting.Builder()
         .name("自动切武器").defaultValue(true).build());
     private final Setting<Boolean> requireMace = sgGeneral.add(new BoolSetting.Builder()
@@ -72,10 +69,10 @@ public class TpAura extends Module {
     private final Setting<Boolean> swingHand = sgGeneral.add(new BoolSetting.Builder()
         .name("挥手").defaultValue(true).build());
     private final Setting<Boolean> silentSwap = sgGeneral.add(new BoolSetting.Builder()
-        .name("静默切换").description("使用数据包切换武器（无动画、无声音），其他玩家更难察觉。切换时会在客户端显示武器图标。")
+        .name("静默切换").description("使用数据包切换武器（无动画、无声音）")
         .defaultValue(true).visible(() -> autoSwitch.get()).build());
 
-    // --- 3. TP Settings ---
+    // 传送设置
     public enum Mode { Vanilla, Paper }
     private final Setting<Mode> mode = sgTP.add(new EnumSetting.Builder<Mode>()
         .name("兼容模式").defaultValue(Mode.Paper).build());
@@ -83,60 +80,39 @@ public class TpAura extends Module {
         .name("最大范围").defaultValue(49.0).min(1).sliderMax(99).build());
     private final Setting<Boolean> goUp = sgTP.add(new BoolSetting.Builder()
         .name("V-Clip").defaultValue(true).visible(() -> mode.get() == Mode.Paper).build());
-
-    public enum ReturnMode { Full("完整回传"), ToHighTarget("传送到目标上方");
-        private final String title;
-        ReturnMode(String title) { this.title = title; }
-        @Override public String toString() { return title; }
-    }
-    private final Setting<ReturnMode> returnMode = sgTP.add(new EnumSetting.Builder<ReturnMode>()
-        .name("回传模式")
-        .description("攻击后的回传方式")
-        .defaultValue(ReturnMode.Full)
+    private final Setting<Boolean> returnPos = sgTP.add(new BoolSetting.Builder()
+        .name("攻击后回传").defaultValue(true).build());
+    private final Setting<Boolean> offsetFix = sgTP.add(new BoolSetting.Builder()
+        .name("偏移同步").description("发送微小偏移包防止拉回").defaultValue(true).build());
+    private final Setting<Boolean> antiLag = sgTP.add(new BoolSetting.Builder()
+        .name("反拉回")
+        .description("被服务器回弹时自动传送回目标位置")
+        .defaultValue(true)
         .build());
 
-    private final Setting<Boolean> offsetFix = sgTP.add(new BoolSetting.Builder()
-        .name("偏移同步").description("发送微小偏移包防止拉回，但可能导致卡住").defaultValue(true).build());
-
-    // --- 4. Targeting Settings ---
+    // 目标设置
     private final Setting<Set<EntityType<?>>> entities = sgTargeting.add(new EntityTypeListSetting.Builder()
         .name("目标实体").defaultValue(Collections.singleton(EntityType.PLAYER)).build());
-
     private final Setting<Boolean> ignoreFriends = sgTargeting.add(new BoolSetting.Builder()
-        .name("忽略好友").defaultValue(false).description("开启后不将好友设为攻击目标").build());
+        .name("忽略好友").defaultValue(false).build());
     private final Setting<Boolean> ignoreNamed = sgTargeting.add(new BoolSetting.Builder()
-        .name("忽略命名").defaultValue(true).description("开启后不将命名实体设为攻击目标").build());
+        .name("忽略命名").defaultValue(true).build());
     private final Setting<Boolean> ignoreTamed = sgTargeting.add(new BoolSetting.Builder()
-        .name("忽略驯服").defaultValue(false).description("开启后不将驯服的生物设为攻击目标").build());
-
-    // Y轴过滤
+        .name("忽略驯服").defaultValue(false).build());
     private final Setting<Boolean> enableYFilter = sgTargeting.add(new BoolSetting.Builder()
-        .name("启用Y轴过滤")
-        .description("只攻击Y坐标在指定范围内的目标")
-        .defaultValue(false)
-        .build());
+        .name("启用Y轴过滤").defaultValue(false).build());
     private final Setting<Double> minY = sgTargeting.add(new DoubleSetting.Builder()
-        .name("最小Y")
-        .description("目标的最低Y坐标")
-        .defaultValue(-64)
-        .min(-2032)
-        .max(2032)
-        .visible(enableYFilter::get)
-        .build());
+        .name("最小Y").defaultValue(-64).min(-2032).max(2032).visible(enableYFilter::get).build());
     private final Setting<Double> maxY = sgTargeting.add(new DoubleSetting.Builder()
-        .name("最大Y")
-        .description("目标的最高Y坐标")
-        .defaultValue(320)
-        .min(-2032)
-        .max(2032)
-        .visible(enableYFilter::get)
-        .build());
+        .name("最大Y").defaultValue(320).min(-2032).max(2032).visible(enableYFilter::get).build());
 
     public enum ListMode { Whitelist, Blacklist, Off }
     private final Setting<ListMode> listMode = sgWhitelist.add(new EnumSetting.Builder<ListMode>()
         .name("名单模式").defaultValue(ListMode.Off).build());
     private final Setting<String> playerList = sgWhitelist.add(new StringSetting.Builder()
         .name("玩家列表").defaultValue("").build());
+
+    // 渲染
     private final Setting<Boolean> renderPath = sgRender.add(new BoolSetting.Builder()
         .name("显示路径").defaultValue(true).build());
     private final Setting<SettingColor> pathColor = sgRender.add(new ColorSetting.Builder()
@@ -144,13 +120,17 @@ public class TpAura extends Module {
     private final Setting<SettingColor> targetColor = sgRender.add(new ColorSetting.Builder()
         .name("目标颜色").defaultValue(new SettingColor(255, 0, 0, 200)).build());
 
+    // 内部变量
     private final List<Entity> targets = new ArrayList<>();
     private final List<Vec3d> renderPathNodes = new ArrayList<>();
     private Entity currentTarget;
     private int originalSlot = -1;
     private int silentSwapSlot = -1;
     private int silentSwapPrevSlot = -1;
-    private long nextAttackTime = System.nanoTime();
+    private long nextAttackTime = 0;
+
+    // 反拉回目标位置
+    private Vec3d antiLagTarget = null;
 
     public TpAura() {
         super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。抄袭了裤子条纹的tp。娱乐功能");
@@ -161,15 +141,14 @@ public class TpAura extends Module {
         originalSlot = -1;
         silentSwapSlot = -1;
         silentSwapPrevSlot = -1;
-        nextAttackTime = System.nanoTime();
+        nextAttackTime = System.currentTimeMillis();
         renderPathNodes.clear();
+        antiLagTarget = null;
     }
 
     @Override
     public void onDeactivate() {
-        if (silentSwapSlot != -1 && mc.player != null) {
-            swapBackWeapon();
-        }
+        if (silentSwapSlot != -1 && mc.player != null) swapBackWeapon();
         if (originalSlot != -1 && autoSwitch.get() && !silentSwap.get() && mc.player != null) {
             ((InventoryAccessor) mc.player.getInventory()).setSelectedSlot(originalSlot);
             originalSlot = -1;
@@ -231,44 +210,42 @@ public class TpAura extends Module {
         silentSwapPrevSlot = -1;
     }
 
-    /**
-     * 高频攻击检查：监听 Render3DEvent，每帧执行，突破 20TPS 限制。
-     */
     @EventHandler
-    private void onRenderAttack(Render3DEvent event) {
+    private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
 
-        if (autoSwitch.get()) {
-            if (!checkAndSwapWeapon()) return;
-        }
-
-        int attacksThisFrame = 0;
-        long now = System.nanoTime();
-        long delayNs = attackDelayMs.get() * 1_000_000L;
-
-        while (now >= nextAttackTime && attacksThisFrame < maxAttacksPerFrame.get()) {
-            targets.clear();
-            TargetUtils.getList(targets, this::entityCheck, SortPriority.LowestDistance, 1);
-            if (targets.isEmpty()) break;
-
-            currentTarget = targets.get(0);
-            executeTrouserAttack(currentTarget);
-            attacksThisFrame++;
-
-            if (delayNs > 0) {
-                nextAttackTime += delayNs;
-                if (now >= nextAttackTime) nextAttackTime = now + delayNs;
-            } else {
-                nextAttackTime = now;
-                break;
-            }
-        }
-
-        if (attacksThisFrame == 0) {
+        // 移动时暂停
+        if (pauseOnMove.get() && isPlayerMoving()) {
             swapBackWeapon();
-        } else {
-            swapBackWeapon();
+            return;
         }
+
+        if (System.currentTimeMillis() < nextAttackTime) {
+            swapBackWeapon();
+            return;
+        }
+
+        if (autoSwitch.get() && !checkAndSwapWeapon()) return;
+
+        targets.clear();
+        TargetUtils.getList(targets, this::entityCheck, SortPriority.LowestDistance, 1);
+        if (targets.isEmpty()) {
+            currentTarget = null;
+            swapBackWeapon();
+            return;
+        }
+        currentTarget = targets.get(0);
+
+        executeTrouserAttack(currentTarget);
+        swapBackWeapon();
+
+        nextAttackTime = System.currentTimeMillis() + attackDelayMs.get();
+    }
+
+    private boolean isPlayerMoving() {
+        if (mc.player == null) return false;
+        PlayerInput input = mc.player.input.playerInput;
+        return input.forward() || input.backward() || input.left() || input.right();
     }
 
     private void executeTrouserAttack(Entity target) {
@@ -293,6 +270,7 @@ public class TpAura extends Module {
         if (mode.get() == Mode.Paper) {
             Vec3d currentServerPos = startPos;
 
+            // 攻击路径
             if (goUp.get()) {
                 paperTP(currentServerPos, highStart);
                 currentServerPos = highStart;
@@ -306,7 +284,7 @@ public class TpAura extends Module {
             mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
             // 回传
-            if (returnMode.get() == ReturnMode.Full) {
+            if (returnPos.get()) {
                 if (goUp.get()) {
                     paperTP(currentServerPos, highTarget);
                     currentServerPos = highTarget;
@@ -314,11 +292,30 @@ public class TpAura extends Module {
                     currentServerPos = highStart;
                 }
                 paperTP(currentServerPos, startPos);
-            } else if (returnMode.get() == ReturnMode.ToHighTarget) {
-                paperTP(currentServerPos, highTarget);
+                currentServerPos = startPos;
+
+                // 客户端位置同步
+                if (offsetFix.get()) {
+                    Vec3d offset = getOffset(startPos);
+                    paperTP(currentServerPos, offset);
+                    mc.player.updatePosition(offset.x, offset.y, offset.z);
+                } else {
+                    mc.player.updatePosition(startPos.x, startPos.y, startPos.z);
+                }
+                antiLagTarget = offsetFix.get() ? getOffset(startPos) : startPos; // 反拉回目标
+            } else {
+                if (offsetFix.get()) {
+                    Vec3d offset = getOffset(finalPos);
+                    paperTP(currentServerPos, offset);
+                    mc.player.updatePosition(offset.x, offset.y, offset.z);
+                } else {
+                    mc.player.updatePosition(finalPos.x, finalPos.y, finalPos.z);
+                }
+                antiLagTarget = offsetFix.get() ? getOffset(finalPos) : finalPos; // 反拉回目标
             }
+            mc.player.setVelocity(0, 0, 0);
         } else {
-            // Vanilla 模式
+            // Vanilla 模式保持不变
             int spam = 4;
             for (int i = 0; i < spam; i++) {
                 mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, mc.player.horizontalCollision));
@@ -331,25 +328,28 @@ public class TpAura extends Module {
             if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
             mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
-            if (returnMode.get() == ReturnMode.Full) {
+            if (returnPos.get()) {
                 if (goUp.get()) {
                     sendMove(highTarget);
                     sendMove(highStart);
                 }
                 sendMove(startPos);
-            } else if (returnMode.get() == ReturnMode.ToHighTarget) {
-                sendMove(highTarget);
-            }
-            if (offsetFix.get()) {
-                Vec3d offset = getOffset(finalPos);
-                sendMove(offset);
-                mc.player.updatePosition(offset.x, offset.y, offset.z);
+                Vec3d finalPosClient = offsetFix.get() ? getOffset(startPos) : startPos;
+                if (offsetFix.get()) sendMove(finalPosClient);
+                mc.player.updatePosition(finalPosClient.x, finalPosClient.y, finalPosClient.z);
+                antiLagTarget = finalPosClient;
             } else {
-                mc.player.updatePosition(finalPos.x, finalPos.y, finalPos.z);
+                Vec3d finalPosClient = offsetFix.get() ? getOffset(finalPos) : finalPos;
+                if (offsetFix.get()) sendMove(finalPosClient);
+                mc.player.updatePosition(finalPosClient.x, finalPosClient.y, finalPosClient.z);
+                antiLagTarget = finalPosClient;
             }
         }
     }
 
+    /**
+     * Paper模式传送，完全复刻旧版 ICTP 的防回弹逻辑。
+     */
     private void paperTP(Vec3d from, Vec3d to) {
         if (mc.player.isSneaking()) {
             PlayerInput lastInput = mc.player.getLastPlayerInput();
@@ -366,11 +366,10 @@ public class TpAura extends Module {
         }
 
         double distance = from.distanceTo(to);
-        int packetsRequired = (int) Math.ceil(Math.abs(distance / 10));
+        int packetsRequired = (int) Math.ceil(distance / 10);
         for (int i = 0; i < packetsRequired - 1; i++) {
             mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(true, mc.player.horizontalCollision));
         }
-
         mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
     }
 
@@ -378,6 +377,24 @@ public class TpAura extends Module {
         PlayerMoveC2SPacket packet = new PlayerMoveC2SPacket.PositionAndOnGround(pos.x, pos.y, pos.z, false, false);
         ((IPlayerMoveC2SPacket) packet).meteor$setTag(1337);
         mc.player.networkHandler.sendPacket(packet);
+    }
+
+    @EventHandler
+    private void onPacketReceive(PacketEvent.Receive event) {
+        if (mc.player == null || mc.world == null || !antiLag.get() || antiLagTarget == null) return;
+
+        if (event.packet instanceof PlayerPositionLookS2CPacket packet) {
+            Vec3d serverPos = packet.change().position();
+            double dist = serverPos.distanceTo(antiLagTarget);
+            if (dist > maxRange.get() || dist < 0.01) return;
+
+            event.cancel();
+            mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
+
+            // 重新传送到反拉回目标位置
+            paperTP(serverPos, antiLagTarget);
+            mc.player.updatePosition(antiLagTarget.x, antiLagTarget.y, antiLagTarget.z);
+        }
     }
 
     @EventHandler
@@ -399,7 +416,7 @@ public class TpAura extends Module {
         double dx = 0.05, dy = 0.01;
         List<Vec3d> offsets = Arrays.asList(base.add(dx, dy, 0), base.add(-dx, dy, 0), base.add(0, dy, dx), base.add(0, dy, -dx));
         Collections.shuffle(offsets);
-        for (Vec3d pos : offsets) { if (!invalid(pos)) return pos; }
+        for (Vec3d pos : offsets) if (!invalid(pos)) return pos;
         return base.add(0, dy, 0);
     }
 
@@ -439,9 +456,7 @@ public class TpAura extends Module {
 
         if (ignoreFriends.get() && entity instanceof PlayerEntity p && Friends.get().isFriend(p)) return false;
         if (ignoreNamed.get() && entity.hasCustomName()) return false;
-        if (ignoreTamed.get()) {
-            if (entity instanceof TameableEntity tameable && tameable.isTamed()) return false;
-        }
+        if (ignoreTamed.get() && entity instanceof TameableEntity tameable && tameable.isTamed()) return false;
 
         if (entity instanceof PlayerEntity p) {
             if (p.isCreative() || p.isSpectator()) return false;
