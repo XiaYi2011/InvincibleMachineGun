@@ -251,7 +251,7 @@ public class TpAura extends Module {
         Vec3d startPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         Vec3d targetCenter = target.getBoundingBox().getCenter();
 
-        // 在目标周围 6 格球体内寻找最接近目标中心的合法传送点
+        // 在目标周围 6 格球体内寻找最接近目标中心的合法落脚点（只检查落脚点本身是否卡墙）
         Vec3d finalPos = findNearestLegalToTarget(startPos, targetCenter, 6.0);
         if (finalPos == null) return false;
 
@@ -261,11 +261,16 @@ public class TpAura extends Module {
                 Vec3d highStart = startPos.add(0, vh, 0);
                 Vec3d highTarget = finalPos.add(0, vh, 0);
 
-                if (!isWholeTpValid(startPos, highStart) ||
-                    !isWholeTpValid(highStart, highTarget) ||
-                    !isWholeTpValid(highTarget, finalPos)) {
-                    return false;
-                }
+                // 检查垂直上升段
+                if (!isWholeTpValid(startPos, highStart)) return false;
+
+                // 尝试调整 highTarget 以避免横向路径穿墙
+                Vec3d adjustedHighTarget = findSafeHighTarget(highStart, finalPos, vh);
+                if (adjustedHighTarget == null) return false;
+                highTarget = adjustedHighTarget;
+
+                // 下降段检查
+                if (!isWholeTpValid(highTarget, finalPos)) return false;
 
                 buildRenderPath(startPos, highStart);
                 buildRenderPath(highStart, highTarget);
@@ -284,6 +289,7 @@ public class TpAura extends Module {
                 mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
                 if (returnPos.get()) {
+                    // 回传路径与攻击路径对称，已通过 adjustedHighTarget 保证合法
                     if (!isWholeTpValid(current, highTarget) ||
                         !isWholeTpValid(highTarget, highStart) ||
                         !isWholeTpValid(highStart, startPos)) {
@@ -312,6 +318,7 @@ public class TpAura extends Module {
                     mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
                 }
             } else {
+                // 无 V‑Clip，直接传送
                 if (!isWholeTpValid(startPos, finalPos)) return false;
 
                 buildRenderPath(startPos, finalPos);
@@ -392,7 +399,27 @@ public class TpAura extends Module {
         return true;
     }
 
-    // ------------------ 目标点搜索：6格球体内最接近目标中心的合法点 ------------------
+    /**
+     * 为横向移动段寻找安全高度：若 highStart → (finalPos + vh) 不合法，
+     * 尝试在 finalPos 上方 vh + offset（offset = ±1～±5）寻找合法路径。
+     */
+    private Vec3d findSafeHighTarget(Vec3d highStart, Vec3d finalPos, double baseHeight) {
+        // 原始高度
+        Vec3d original = finalPos.add(0, baseHeight, 0);
+        if (isWholeTpValid(highStart, original) && isWholeTpValid(original, finalPos))
+            return original;
+
+        for (int offset = 1; offset <= 5; offset++) {
+            for (int sign : new int[]{1, -1}) {
+                Vec3d candidate = finalPos.add(0, baseHeight + offset * sign, 0);
+                if (isWholeTpValid(highStart, candidate) && isWholeTpValid(candidate, finalPos))
+                    return candidate;
+            }
+        }
+        return null;
+    }
+
+    // ------------------ 目标点搜索：6格球体内最接近目标中心的合法点（只检查落脚点不卡墙） ------------------
     private Vec3d findNearestLegalToTarget(Vec3d startPos, Vec3d targetCenter, double radius) {
         double bestDistSq = Double.MAX_VALUE;
         Vec3d bestPos = null;
@@ -404,7 +431,8 @@ public class TpAura extends Module {
                 for (int dz = -intRadius; dz <= intRadius; dz++) {
                     if (dx*dx + dy*dy + dz*dz > radius*radius) continue;
                     Vec3d candidate = targetCenter.add(dx + 0.5, dy, dz + 0.5);
-                    if (!invalid(candidate) && isWholeTpValid(startPos, candidate)) {
+                    // 只检查落脚点本身是否卡墙，不检查 startPos -> candidate 的路径
+                    if (!invalid(candidate)) {
                         double distSq = targetCenter.squaredDistanceTo(candidate);
                         if (distSq < bestDistSq) {
                             bestDistSq = distSq;
@@ -422,7 +450,7 @@ public class TpAura extends Module {
                 for (double dz = -radius; dz <= radius; dz += 0.5) {
                     if (dx*dx + dy*dy + dz*dz > radius*radius) continue;
                     Vec3d candidate = targetCenter.add(dx, dy, dz);
-                    if (!invalid(candidate) && isWholeTpValid(startPos, candidate)) {
+                    if (!invalid(candidate)) {
                         double distSq = targetCenter.squaredDistanceTo(candidate);
                         if (distSq < bestDistSq) {
                             bestDistSq = distSq;
