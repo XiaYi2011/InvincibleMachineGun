@@ -33,6 +33,7 @@ import net.minecraft.util.PlayerInput;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.shape.VoxelShape;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -83,7 +84,7 @@ public class TpAura extends Module {
         .build());
     private final Setting<Double> vClipHeight = sgTP.add(new DoubleSetting.Builder()
         .name("V-Clip 高度")
-        .description("上升的高度，不再等于攻击范围")
+        .description("上升的高度")
         .defaultValue(22.0)
         .min(1)
         .sliderMax(100)
@@ -98,10 +99,14 @@ public class TpAura extends Module {
         .description("被服务器回弹时自动传送回目标位置")
         .defaultValue(true)
         .build());
-    private final Setting<Boolean> split22 = sgTP.add(new BoolSetting.Builder()
-        .name("22距离")
-        .description("当传送距离超过22格时，自动拆分为多段传送（每段≤22格）")
-        .defaultValue(false)
+
+    // 最大单次传送距离
+    private final Setting<Double> maxSingleTpDistance = sgTP.add(new DoubleSetting.Builder()
+        .name("最大单次传送距离")
+        .description("每段传送的最大距离，超过则自动拆分，0 为无限制")
+        .defaultValue(0.0)
+        .min(0)
+        .sliderMax(100)
         .build());
 
     // 目标设置
@@ -142,12 +147,10 @@ public class TpAura extends Module {
     private int silentSwapSlot = -1;
     private int silentSwapPrevSlot = -1;
     private long nextAttackTime = 0;
-
-    // 当前服务器期望位置（用于反拉回）
     private Vec3d expectedPos = null;
 
     public TpAura() {
-        super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。22距离分段传送。");
+        super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。独立V-Clip高度，横向路径检查。");
     }
 
     @Override
@@ -264,6 +267,16 @@ public class TpAura extends Module {
         Vec3d highStart = startPos.add(0, vHeight, 0);
         Vec3d highTarget = finalPos.add(0, vHeight, 0);
 
+        // 检查所有横向路径及停留点
+        if (goUp.get()) {
+            if (!isClearPath(startPos, highStart) || !isClearPath(highStart, highTarget) || !isClearPath(highTarget, finalPos))
+                return;
+            if (!invalid(highStart) || !invalid(highTarget) || !invalid(finalPos)) return;
+        } else {
+            if (!isClearPath(startPos, finalPos)) return;
+            if (!invalid(finalPos)) return;
+        }
+
         renderPathNodes.clear();
         renderPathNodes.add(startPos);
         if (mode.get() == Mode.Paper && goUp.get()) {
@@ -276,7 +289,6 @@ public class TpAura extends Module {
             Vec3d currentServerPos = startPos;
             expectedPos = currentServerPos;
 
-            // V-Clip 上升 + 平移
             if (goUp.get()) {
                 doPaperTP(currentServerPos, highStart);
                 currentServerPos = highStart;
@@ -286,7 +298,6 @@ public class TpAura extends Module {
                 currentServerPos = highTarget;
                 expectedPos = currentServerPos;
             }
-            // 下降攻击
             doPaperTP(currentServerPos, finalPos);
             currentServerPos = finalPos;
             expectedPos = currentServerPos;
@@ -294,7 +305,6 @@ public class TpAura extends Module {
             if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
             mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
-            // 回传
             if (returnPos.get()) {
                 if (goUp.get()) {
                     doPaperTP(currentServerPos, highTarget);
@@ -324,7 +334,6 @@ public class TpAura extends Module {
                 }
             }
         } else {
-            // Vanilla 模式（同样使用独立 V-Clip 高度，不分段）
             int spam = 4;
             for (int i = 0; i < spam; i++) {
                 mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, mc.player.horizontalCollision));
@@ -354,32 +363,71 @@ public class TpAura extends Module {
         }
     }
 
-    // 分段传送核心方法
+    // 路径是否无障碍（检查横向移动路径上的方块碰撞）
+    private boolean isClearPath(Vec3d from, Vec3d to) {
+        // 垂直移动不检查，直接视为可通过
+        if (from.x == to.x && from.z == to.z) return true;
+
+        double distance = from.distanceTo(to);
+        double step = 0.5; // 采样步长
+        int steps = (int) Math.ceil(distance / step);
+        Vec3d direction = to.subtract(from).normalize();
+        for (int i = 0; i <= steps; i++) {
+            double t = Math.min(i * step, distance);
+            Vec3d point = from.add(direction.multiply(t));
+            if (isObstructed(point)) return false;
+        }
+        return true;
+    }
+
+    // 检查某个位置是否被方块占据（考虑玩家碰撞箱）
+    private boolean isObstructed(Vec3d pos) {
+        Box box = mc.player.getBoundingBox().offset(pos.subtract(new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ())));
+        // 收缩一点避免边缘误判
+        box = box.expand(-0.0001, -0.0001, -0.0001);
+        for (VoxelShape v : mc.world.getBlockCollisions(mc.player, box)) {
+            return true;
+        }
+        return false;
+    }
+
+    // 停留点是否安全（方块碰撞 + 不是岩浆）
+    private boolean invalid(Vec3d pos) {
+        if (mc.world == null) return true;
+        BlockPos bp = BlockPos.ofFloored(pos.x, pos.y, pos.z);
+        if (mc.world.getChunk(bp.getX() >> 4, bp.getZ() >> 4) == null) return true;
+        Box box = mc.player.getBoundingBox().offset(pos.subtract(new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ())));
+        for (BlockPos bPos : BlockPos.iterate(BlockPos.ofFloored(box.minX, box.minY, box.minZ), BlockPos.ofFloored(box.maxX, box.maxY, box.maxZ))) {
+            BlockState state = mc.world.getBlockState(bPos);
+            if (!state.getCollisionShape(mc.world, bPos).isEmpty() || state.isOf(Blocks.LAVA)) return true;
+        }
+        return false;
+    }
+
+    // 分段传送核心
     private void doPaperTP(Vec3d from, Vec3d to) {
-        if (!split22.get()) {
+        double limit = maxSingleTpDistance.get();
+        if (limit <= 0) {
             paperTP(from, to);
             return;
         }
         double dist = from.distanceTo(to);
-        if (dist <= 22.0) {
+        if (dist <= limit) {
             paperTP(from, to);
             return;
         }
-        // 需要拆分
-        int segments = (int) Math.ceil(dist / 22.0);
+        int segments = (int) Math.ceil(dist / limit);
         Vec3d direction = to.subtract(from).normalize();
-        double segmentLength = dist / segments; // 每段长度 ≤22
+        double segmentLength = dist / segments;
         Vec3d current = from;
         for (int i = 0; i < segments; i++) {
             Vec3d next = current.add(direction.multiply(segmentLength));
-            // 最后一段直接到终点，避免浮点误差
             if (i == segments - 1) next = to;
             paperTP(current, next);
             current = next;
         }
     }
 
-    // 原始的单次传送（已实现 ICTP 防回弹）
     private void paperTP(Vec3d from, Vec3d to) {
         if (mc.player.isSneaking()) {
             PlayerInput lastInput = mc.player.getLastPlayerInput();
@@ -421,7 +469,6 @@ public class TpAura extends Module {
             event.cancel();
             mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
 
-            // 反拉回也应用分段传送
             doPaperTP(serverPos, expectedPos);
         }
     }
@@ -447,18 +494,6 @@ public class TpAura extends Module {
         Collections.shuffle(offsets);
         for (Vec3d pos : offsets) if (!invalid(pos)) return pos;
         return base.add(0, dy, 0);
-    }
-
-    private boolean invalid(Vec3d pos) {
-        if (mc.world == null) return true;
-        BlockPos bp = BlockPos.ofFloored(pos.x, pos.y, pos.z);
-        if (mc.world.getChunk(bp.getX() >> 4, bp.getZ() >> 4) == null) return true;
-        Box box = mc.player.getBoundingBox().offset(pos.subtract(new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ())));
-        for (BlockPos bPos : BlockPos.iterate(BlockPos.ofFloored(box.minX, box.minY, box.minZ), BlockPos.ofFloored(box.maxX, box.maxY, box.maxZ))) {
-            BlockState state = mc.world.getBlockState(bPos);
-            if (!state.getCollisionShape(mc.world, bPos).isEmpty() || state.isOf(Blocks.LAVA)) return true;
-        }
-        return false;
     }
 
     private Vec3d findNearestPos(Vec3d desired) {
