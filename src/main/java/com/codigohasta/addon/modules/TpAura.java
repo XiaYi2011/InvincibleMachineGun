@@ -70,9 +70,25 @@ public class TpAura extends Module {
     private final Setting<Mode> mode = sgTP.add(new EnumSetting.Builder<Mode>()
         .name("兼容模式").defaultValue(Mode.Paper).build());
     private final Setting<Double> maxRange = sgTP.add(new DoubleSetting.Builder()
-        .name("最大范围").defaultValue(49.0).min(1).sliderMax(99).build());
+        .name("最大攻击范围")
+        .description("能攻击到的最远距离")
+        .defaultValue(49.0)
+        .min(1)
+        .sliderMax(99)
+        .build());
     private final Setting<Boolean> goUp = sgTP.add(new BoolSetting.Builder()
-        .name("V-Clip").defaultValue(true).visible(() -> mode.get() == Mode.Paper).build());
+        .name("V-Clip")
+        .description("启用 V-Clip 上升再下降的攻击路径")
+        .defaultValue(true)
+        .build());
+    private final Setting<Double> vClipHeight = sgTP.add(new DoubleSetting.Builder()
+        .name("V-Clip 高度")
+        .description("上升的高度，不再等于攻击范围")
+        .defaultValue(22.0)
+        .min(1)
+        .sliderMax(100)
+        .visible(goUp::get)
+        .build());
     private final Setting<Boolean> returnPos = sgTP.add(new BoolSetting.Builder()
         .name("攻击后回传").defaultValue(true).build());
     private final Setting<Boolean> offsetFix = sgTP.add(new BoolSetting.Builder()
@@ -81,6 +97,11 @@ public class TpAura extends Module {
         .name("反拉回")
         .description("被服务器回弹时自动传送回目标位置")
         .defaultValue(true)
+        .build());
+    private final Setting<Boolean> split22 = sgTP.add(new BoolSetting.Builder()
+        .name("22距离")
+        .description("当传送距离超过22格时，自动拆分为多段传送（每段≤22格）")
+        .defaultValue(false)
         .build());
 
     // 目标设置
@@ -122,11 +143,11 @@ public class TpAura extends Module {
     private int silentSwapPrevSlot = -1;
     private long nextAttackTime = 0;
 
-    // 反拉回目标位置
-    private Vec3d antiLagTarget = null;
+    // 当前服务器期望位置（用于反拉回）
+    private Vec3d expectedPos = null;
 
     public TpAura() {
-        super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。抄袭了裤子条纹的tp。娱乐功能");
+        super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。22距离分段传送。");
     }
 
     @Override
@@ -136,7 +157,7 @@ public class TpAura extends Module {
         silentSwapPrevSlot = -1;
         nextAttackTime = System.currentTimeMillis();
         renderPathNodes.clear();
-        antiLagTarget = null;
+        expectedPos = null;
     }
 
     @Override
@@ -146,6 +167,7 @@ public class TpAura extends Module {
             ((InventoryAccessor) mc.player.getInventory()).setSelectedSlot(originalSlot);
             originalSlot = -1;
         }
+        expectedPos = null;
     }
 
     private int findWeaponInventorySlot() {
@@ -219,6 +241,7 @@ public class TpAura extends Module {
         if (targets.isEmpty()) {
             currentTarget = null;
             swapBackWeapon();
+            expectedPos = null;
             return;
         }
         currentTarget = targets.get(0);
@@ -233,12 +256,13 @@ public class TpAura extends Module {
         Vec3d startPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         Vec3d targetPos = new Vec3d(target.getX(), target.getY(), target.getZ());
         double reach = maxRange.get();
+        double vHeight = vClipHeight.get();
 
         Vec3d finalPos = !invalid(targetPos) ? targetPos : findNearestPos(targetPos);
         if (finalPos == null) return;
 
-        Vec3d highStart = startPos.add(0, reach, 0);
-        Vec3d highTarget = finalPos.add(0, reach, 0);
+        Vec3d highStart = startPos.add(0, vHeight, 0);
+        Vec3d highTarget = finalPos.add(0, vHeight, 0);
 
         renderPathNodes.clear();
         renderPathNodes.add(startPos);
@@ -250,16 +274,22 @@ public class TpAura extends Module {
 
         if (mode.get() == Mode.Paper) {
             Vec3d currentServerPos = startPos;
+            expectedPos = currentServerPos;
 
-            // 攻击路径
+            // V-Clip 上升 + 平移
             if (goUp.get()) {
-                paperTP(currentServerPos, highStart);
+                doPaperTP(currentServerPos, highStart);
                 currentServerPos = highStart;
-                paperTP(currentServerPos, highTarget);
+                expectedPos = currentServerPos;
+
+                doPaperTP(currentServerPos, highTarget);
                 currentServerPos = highTarget;
+                expectedPos = currentServerPos;
             }
-            paperTP(currentServerPos, finalPos);
+            // 下降攻击
+            doPaperTP(currentServerPos, finalPos);
             currentServerPos = finalPos;
+            expectedPos = currentServerPos;
 
             if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
             mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
@@ -267,32 +297,34 @@ public class TpAura extends Module {
             // 回传
             if (returnPos.get()) {
                 if (goUp.get()) {
-                    paperTP(currentServerPos, highTarget);
+                    doPaperTP(currentServerPos, highTarget);
                     currentServerPos = highTarget;
-                    paperTP(currentServerPos, highStart);
+                    expectedPos = currentServerPos;
+
+                    doPaperTP(currentServerPos, highStart);
                     currentServerPos = highStart;
+                    expectedPos = currentServerPos;
                 }
-                paperTP(currentServerPos, startPos);
+                doPaperTP(currentServerPos, startPos);
                 currentServerPos = startPos;
+                expectedPos = currentServerPos;
 
                 if (offsetFix.get()) {
                     Vec3d offset = getOffset(startPos);
-                    paperTP(currentServerPos, offset);
-                    antiLagTarget = offset;
-                } else {
-                    antiLagTarget = startPos;
+                    doPaperTP(currentServerPos, offset);
+                    expectedPos = offset;
                 }
             } else {
                 if (offsetFix.get()) {
                     Vec3d offset = getOffset(finalPos);
-                    paperTP(currentServerPos, offset);
-                    antiLagTarget = offset;
+                    doPaperTP(currentServerPos, offset);
+                    expectedPos = offset;
                 } else {
-                    antiLagTarget = finalPos;
+                    expectedPos = finalPos;
                 }
             }
         } else {
-            // Vanilla 模式
+            // Vanilla 模式（同样使用独立 V-Clip 高度，不分段）
             int spam = 4;
             for (int i = 0; i < spam; i++) {
                 mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, mc.player.horizontalCollision));
@@ -313,18 +345,41 @@ public class TpAura extends Module {
                 sendMove(startPos);
                 Vec3d finalPosClient = offsetFix.get() ? getOffset(startPos) : startPos;
                 if (offsetFix.get()) sendMove(finalPosClient);
-                antiLagTarget = finalPosClient;
+                expectedPos = finalPosClient;
             } else {
                 Vec3d finalPosClient = offsetFix.get() ? getOffset(finalPos) : finalPos;
                 if (offsetFix.get()) sendMove(finalPosClient);
-                antiLagTarget = finalPosClient;
+                expectedPos = finalPosClient;
             }
         }
     }
 
-    /**
-     * Paper模式传送，完全复刻旧版 ICTP 的防回弹逻辑。
-     */
+    // 分段传送核心方法
+    private void doPaperTP(Vec3d from, Vec3d to) {
+        if (!split22.get()) {
+            paperTP(from, to);
+            return;
+        }
+        double dist = from.distanceTo(to);
+        if (dist <= 22.0) {
+            paperTP(from, to);
+            return;
+        }
+        // 需要拆分
+        int segments = (int) Math.ceil(dist / 22.0);
+        Vec3d direction = to.subtract(from).normalize();
+        double segmentLength = dist / segments; // 每段长度 ≤22
+        Vec3d current = from;
+        for (int i = 0; i < segments; i++) {
+            Vec3d next = current.add(direction.multiply(segmentLength));
+            // 最后一段直接到终点，避免浮点误差
+            if (i == segments - 1) next = to;
+            paperTP(current, next);
+            current = next;
+        }
+    }
+
+    // 原始的单次传送（已实现 ICTP 防回弹）
     private void paperTP(Vec3d from, Vec3d to) {
         if (mc.player.isSneaking()) {
             PlayerInput lastInput = mc.player.getLastPlayerInput();
@@ -356,18 +411,18 @@ public class TpAura extends Module {
 
     @EventHandler
     private void onPacketReceive(PacketEvent.Receive event) {
-        if (mc.player == null || mc.world == null || !antiLag.get() || antiLagTarget == null) return;
+        if (mc.player == null || mc.world == null || !antiLag.get() || expectedPos == null) return;
 
         if (event.packet instanceof PlayerPositionLookS2CPacket packet) {
             Vec3d serverPos = packet.change().position();
-            double dist = serverPos.distanceTo(antiLagTarget);
+            double dist = serverPos.distanceTo(expectedPos);
             if (dist > maxRange.get() || dist < 0.01) return;
 
             event.cancel();
             mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
 
-            // 重新传送到反拉回目标位置（仅发包）
-            paperTP(serverPos, antiLagTarget);
+            // 反拉回也应用分段传送
+            doPaperTP(serverPos, expectedPos);
         }
     }
 
