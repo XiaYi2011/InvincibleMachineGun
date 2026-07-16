@@ -41,6 +41,8 @@ import org.jetbrains.annotations.Nullable;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static meteordevelopment.meteorclient.MeteorClient.mc;
+
 public class TpAura extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgTiming = settings.createGroup("攻击机制");
@@ -148,7 +150,6 @@ public class TpAura extends Module {
         expectedPos = null;
     }
 
-    // ------------------ 武器逻辑 ------------------
     private int findWeaponInventorySlot() {
         for (int i = 0; i < 45; i++) {
             String name = mc.player.getInventory().getStack(i).getItem().toString().toLowerCase();
@@ -245,13 +246,11 @@ public class TpAura extends Module {
         nextAttackTime = System.currentTimeMillis() + attackDelayMs.get();
     }
 
-    // ------------------ 攻击核心（返回是否成功） ------------------
     private boolean executeTrouserAttack(Entity target) {
         renderPathNodes.clear();
         Vec3d startPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         Vec3d targetCenter = target.getBoundingBox().getCenter();
 
-        // 在目标周围 6 格球体内寻找最接近目标中心的合法落脚点（只检查落脚点本身是否卡墙）
         Vec3d finalPos = findNearestLegalToTarget(startPos, targetCenter, 6.0);
         if (finalPos == null) return false;
 
@@ -261,15 +260,18 @@ public class TpAura extends Module {
                 Vec3d highStart = startPos.add(0, vh, 0);
                 Vec3d highTarget = finalPos.add(0, vh, 0);
 
-                // 检查垂直上升段
-                if (!isWholeTpValid(startPos, highStart)) return false;
+                // 垂直段仅检查终点是否卡墙（忽略路径碰撞）
+                if (isObstructed(highStart)) return false;
+                if (isObstructed(highTarget)) return false; // 会被 findSafeHighTarget 内部检查
+                if (isObstructed(finalPos)) return false;
 
-                // 尝试调整 highTarget 以避免横向路径穿墙
+                // 横向段：寻找安全高度
                 Vec3d adjustedHighTarget = findSafeHighTarget(highStart, finalPos, vh);
                 if (adjustedHighTarget == null) return false;
                 highTarget = adjustedHighTarget;
 
-                // 下降段检查
+                // 下降段终点合法性（findSafeHighTarget 已确保 highTarget → finalPos 合法）
+                // 但这里再次确认（可选）
                 if (!isWholeTpValid(highTarget, finalPos)) return false;
 
                 buildRenderPath(startPos, highStart);
@@ -289,12 +291,12 @@ public class TpAura extends Module {
                 mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
                 if (returnPos.get()) {
-                    // 回传路径与攻击路径对称，已通过 adjustedHighTarget 保证合法
-                    if (!isWholeTpValid(current, highTarget) ||
-                        !isWholeTpValid(highTarget, highStart) ||
-                        !isWholeTpValid(highStart, startPos)) {
-                        return false;
-                    }
+                    // 回传对称路径
+                    if (isObstructed(highStart) || isObstructed(highTarget) || isObstructed(finalPos)) return false;
+                    if (!isWholeTpValid(current, highTarget)) return false;
+                    if (!isWholeTpValid(highTarget, highStart)) return false;
+                    if (!isWholeTpValid(highStart, startPos)) return false;
+
                     doPaperTP(current, highTarget);
                     current = highTarget; expectedPos = current;
                     doPaperTP(current, highStart);
@@ -318,7 +320,7 @@ public class TpAura extends Module {
                     mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
                 }
             } else {
-                // 无 V‑Clip，直接传送
+                // 无 V-Clip 直接传送，需检查完整路径
                 if (!isWholeTpValid(startPos, finalPos)) return false;
 
                 buildRenderPath(startPos, finalPos);
@@ -354,7 +356,7 @@ public class TpAura extends Module {
                 }
             }
         } else {
-            // Vanilla 模式（保留，未作大改）
+            // Vanilla 模式保持不变
             Vec3d finalPos2 = finalPos;
             double vHeight2 = vClipHeight.get();
             Vec3d highStart2 = startPos.add(0, vHeight2, 0);
@@ -399,19 +401,16 @@ public class TpAura extends Module {
         return true;
     }
 
-    /**
-     * 为横向移动段寻找安全高度：若 highStart → (finalPos + vh) 不合法，
-     * 尝试在 finalPos 上方 vh + offset（offset = ±1～±5）寻找合法路径。
-     */
     private Vec3d findSafeHighTarget(Vec3d highStart, Vec3d finalPos, double baseHeight) {
-        // 原始高度
         Vec3d original = finalPos.add(0, baseHeight, 0);
+        if (isObstructed(original)) return null;  // 端点必须不卡墙
         if (isWholeTpValid(highStart, original) && isWholeTpValid(original, finalPos))
             return original;
 
         for (int offset = 1; offset <= 5; offset++) {
             for (int sign : new int[]{1, -1}) {
                 Vec3d candidate = finalPos.add(0, baseHeight + offset * sign, 0);
+                if (isObstructed(candidate)) continue;
                 if (isWholeTpValid(highStart, candidate) && isWholeTpValid(candidate, finalPos))
                     return candidate;
             }
@@ -419,19 +418,16 @@ public class TpAura extends Module {
         return null;
     }
 
-    // ------------------ 目标点搜索：6格球体内最接近目标中心的合法点（只检查落脚点不卡墙） ------------------
     private Vec3d findNearestLegalToTarget(Vec3d startPos, Vec3d targetCenter, double radius) {
         double bestDistSq = Double.MAX_VALUE;
         Vec3d bestPos = null;
 
         int intRadius = (int) Math.ceil(radius);
-        // 整数网格搜索
         for (int dx = -intRadius; dx <= intRadius; dx++) {
             for (int dy = -intRadius; dy <= intRadius; dy++) {
                 for (int dz = -intRadius; dz <= intRadius; dz++) {
                     if (dx*dx + dy*dy + dz*dz > radius*radius) continue;
                     Vec3d candidate = targetCenter.add(dx + 0.5, dy, dz + 0.5);
-                    // 只检查落脚点本身是否卡墙，不检查 startPos -> candidate 的路径
                     if (!invalid(candidate)) {
                         double distSq = targetCenter.squaredDistanceTo(candidate);
                         if (distSq < bestDistSq) {
@@ -444,7 +440,6 @@ public class TpAura extends Module {
         }
         if (bestPos != null) return bestPos;
 
-        // 细化搜索
         for (double dx = -radius; dx <= radius; dx += 0.5) {
             for (double dy = -radius; dy <= radius; dy += 0.5) {
                 for (double dz = -radius; dz <= radius; dz += 0.5) {
@@ -463,7 +458,6 @@ public class TpAura extends Module {
         return bestPos;
     }
 
-    // ------------------ 渲染路径 ------------------
     private void buildRenderPath(Vec3d from, Vec3d to) {
         if (renderPathNodes.isEmpty()) renderPathNodes.add(from);
         double maxDist = maxSingleTpDist.get();
@@ -486,7 +480,6 @@ public class TpAura extends Module {
         renderPathNodes.add(to);
     }
 
-    // ------------------ 传送核心（分段） ------------------
     private void doPaperTP(Vec3d from, Vec3d to) {
         double maxDist = maxSingleTpDist.get();
         if (maxDist <= 0) {
@@ -533,7 +526,7 @@ public class TpAura extends Module {
         mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
     }
 
-    // ------------------ 合法性检测（移植自 ICTP） ------------------
+    // ---------- ICTP 移植检测 ----------
     private static boolean isWholeTpValid(Vec3d startPos, Vec3d endPos) {
         return startPos.squaredDistanceTo(endPos) < 40000.0000000000001 &&
                !isWrongMove(startPos, endPos) &&
@@ -544,7 +537,6 @@ public class TpAura extends Module {
         return getSquaredMovementDelta(startPos, endPos) > movedWronglyThreshold;
     }
 
-    // ------------------ 服务器移动模拟（完整移植） ------------------
     private static double getSquaredMovementDelta(Vec3d startPos, Vec3d endPos) {
         double d0 = clampHorizontal(endPos.getX());
         double d1 = clampVertical(endPos.getY());
@@ -627,7 +619,6 @@ public class TpAura extends Module {
         return false;
     }
 
-    // ------------------ 其他辅助 ------------------
     private void sendMove(Vec3d pos) {
         PlayerMoveC2SPacket packet = new PlayerMoveC2SPacket.PositionAndOnGround(pos.x, pos.y, pos.z, false, false);
         ((IPlayerMoveC2SPacket) packet).meteor$setTag(1337);
@@ -654,7 +645,6 @@ public class TpAura extends Module {
         }
     }
 
-    // ------------------ 渲染（已按要求修改） ------------------
     @EventHandler
     private void onRender(Render3DEvent event) {
         if (currentTarget != null) {
@@ -663,8 +653,6 @@ public class TpAura extends Module {
 
         if (renderPath.get() && !renderPathNodes.isEmpty() && currentTarget != null) {
             Vec3d targetCenter = currentTarget.getBoundingBox().getCenter();
-
-            // 每个节点绘制 0.25 大小的实心方块
             for (Vec3d node : renderPathNodes) {
                 event.renderer.box(
                     node.x - 0.125, node.y - 0.125, node.z - 0.125,
@@ -672,15 +660,11 @@ public class TpAura extends Module {
                     pathColor.get(), pathColor.get(), ShapeMode.Both, 0
                 );
             }
-
-            // 节点间连线
             for (int i = 0; i < renderPathNodes.size() - 1; i++) {
                 Vec3d n1 = renderPathNodes.get(i);
                 Vec3d n2 = renderPathNodes.get(i + 1);
                 event.renderer.line(n1.x, n1.y, n1.z, n2.x, n2.y, n2.z, pathColor.get());
             }
-
-            // 最后一段连接到目标碰撞箱中心
             Vec3d lastNode = renderPathNodes.get(renderPathNodes.size() - 1);
             event.renderer.line(lastNode.x, lastNode.y, lastNode.z, targetCenter.x, targetCenter.y, targetCenter.z, pathColor.get());
         }
