@@ -698,11 +698,17 @@ public class TpAura extends Module {
             event.renderer.box(currentTarget.getBoundingBox(), targetColor.get(), targetColor.get(), ShapeMode.Lines, 0);
         }
         if (renderPath.get() && !renderPathNodes.isEmpty()) {
+            // 绘制路径连线
             for (int i = 0; i < renderPathNodes.size() - 1; i++) {
                 Vec3d n1 = renderPathNodes.get(i);
                 Vec3d n2 = renderPathNodes.get(i + 1);
                 event.renderer.line(n1.x, n1.y + 1, n1.z, n2.x, n2.y + 1, n2.z, pathColor.get());
-                event.renderer.box(new Box(n1.x - 0.2, n1.y, n1.z - 0.2, n1.x + 0.2, n1.y + 2, n1.z + 0.2), pathColor.get(), pathColor.get(), ShapeMode.Lines, 0);
+            }
+            // 绘制每个端点（0.25 大小的实心方块）
+            double half = 0.125;
+            for (Vec3d node : renderPathNodes) {
+                Box box = new Box(node.x - half, node.y - half, node.z - half, node.x + half, node.y + half, node.z + half);
+                event.renderer.box(box, pathColor.get(), pathColor.get(), ShapeMode.Sides, 0);
             }
         }
     }
