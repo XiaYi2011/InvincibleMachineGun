@@ -269,18 +269,17 @@ public class TpAura extends Module {
 
     // ========== 新的核心攻击逻辑 ==========
     private void executeTrouserAttack(Entity target) {
-        Vec3d playerPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
+        Vec3d startPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         Vec3d targetPos = new Vec3d(target.getX(), target.getY(), target.getZ());
 
         // 在目标半径6格球体内寻找最靠近玩家的合法站立点
-        Vec3d finalPos = findClosestValidPosInSphere(targetPos, playerPos, 6.0);
+        Vec3d finalPos = findClosestValidPosInSphere(targetPos, startPos, 6.0);
         if (finalPos == null) return;
 
         if (mode.get() == Mode.Paper) {
-            paperAttack(target, playerPos, finalPos);
+            paperAttack(target, startPos, finalPos);
         } else {
-            // Vanilla 模式保持不变，但 finalPos 已用新方法获取
-            vanillaAttack(target, playerPos, finalPos);
+            vanillaAttack(target, startPos, finalPos);
         }
     }
 
@@ -299,33 +298,28 @@ public class TpAura extends Module {
             path.add(finalPos);
         }
 
-        // 返回路径
         if (returnPos.get()) {
             if (goUp.get()) {
-                path.add(finalPos.add(0, vClipHeight.get(), 0)); // highTarget
-                path.add(startPos.add(0, vClipHeight.get(), 0)); // highStart
+                path.add(finalPos.add(0, vClipHeight.get(), 0));
+                path.add(startPos.add(0, vClipHeight.get(), 0));
             }
             path.add(startPos);
-            if (offsetFix.get()) {
-                path.add(getOffset(startPos));
-            }
+            if (offsetFix.get()) path.add(getOffset(startPos));
         } else {
-            if (offsetFix.get()) {
-                path.add(getOffset(finalPos));
-            }
+            if (offsetFix.get()) path.add(getOffset(finalPos));
         }
 
-        // 预检整条路径（使用当前服务端预期位置作为起点）
-        Vec3d serverPos = (expectedPos != null) ? expectedPos : startPos;
+        // 预检：务必使用当前实际位置 startPos 作为起点
+        Vec3d serverPos = startPos;
         for (int i = 1; i < path.size(); i++) {
             if (isWrongMove(serverPos, path.get(i))) {
-                return; // 路径不合法，放弃攻击
+                return;
             }
             serverPos = path.get(i);
         }
 
         // 执行传送
-        serverPos = (expectedPos != null) ? expectedPos : startPos;
+        serverPos = startPos;
         expectedPos = serverPos;
         renderPathNodes.clear();
         renderPathNodes.add(serverPos);
@@ -337,11 +331,9 @@ public class TpAura extends Module {
             renderPathNodes.add(next);
         }
 
-        // 攻击
         if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
         mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
-        // 如果不回传且最终位置在目标附近，同步客户端位置（按设计要求，仅此处同步）
         if (!returnPos.get()) {
             mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
         }
@@ -356,7 +348,6 @@ public class TpAura extends Module {
         }
         path.add(finalPos);
 
-        // 准备渲染路径
         renderPathNodes.clear();
         renderPathNodes.add(startPos);
         renderPathNodes.addAll(path);
@@ -375,9 +366,7 @@ public class TpAura extends Module {
 
         if (returnPos.get()) {
             Collections.reverse(path);
-            for (Vec3d p : path) {
-                sendMove(p);
-            }
+            for (Vec3d p : path) sendMove(p);
             sendMove(startPos);
             Vec3d finalPosClient = offsetFix.get() ? getOffset(startPos) : startPos;
             if (offsetFix.get()) sendMove(finalPosClient);
@@ -580,14 +569,14 @@ public class TpAura extends Module {
         return false;
     }
 
-    private boolean isPositionValid(Vec3d pos, Vec3d from) {
-        // 距离不能超过100（近似平方距离），且不卡方块，且不会触发错误移动
-        return from.squaredDistanceTo(pos) < 100.0000000000001 && !isObstructed(pos) && !isWrongMove(from, pos);
-    }
-
-    // ========== 目标点搜索 ==========
+    // ========== 目标点搜索（优化版） ==========
     private Vec3d findClosestValidPosInSphere(Vec3d targetPos, Vec3d playerPos, double radius) {
         BlockPos center = BlockPos.ofFloored(targetPos.x, targetPos.y, targetPos.z);
+        // 快速拒绝：如果玩家与目标中心距离超过16格，则半径6格内任意点离玩家都超过10格，不可能合法
+        if (playerPos.squaredDistanceTo(Vec3d.ofCenter(center)) > 16 * 16) {
+            return null;
+        }
+
         int r = (int) Math.ceil(radius);
         Vec3d best = null;
         double bestDistSq = Double.MAX_VALUE;
@@ -599,8 +588,12 @@ public class TpAura extends Module {
                     Vec3d stand = Vec3d.ofBottomCenter(bp).add(0, 1, 0);
                     if (stand.distanceTo(targetPos) > radius) continue;
 
-                    if (isPositionValid(stand, playerPos)) {
-                        double distSq = playerPos.squaredDistanceTo(stand);
+                    double distSq = playerPos.squaredDistanceTo(stand);
+                    // 距离玩家太远必然不合法，提前跳过
+                    if (distSq >= 100.0000000000001) continue;
+
+                    // 内联合法性判断，避免重复计算距离
+                    if (!isObstructed(stand) && !isWrongMove(playerPos, stand)) {
                         if (distSq < bestDistSq) {
                             bestDistSq = distSq;
                             best = stand;
