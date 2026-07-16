@@ -23,7 +23,7 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.passive.TameableEntity;
-import net.minecraft.entity.player.Input;
+import net.minecraft.entity.player.PlayerInput;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.network.packet.c2s.play.CloseHandledScreenC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerInputC2SPacket;
@@ -80,7 +80,7 @@ public class TpAura extends Module {
     private final Setting<Boolean> offsetFix = sgTP.add(new BoolSetting.Builder()
         .name("偏移同步").description("发送微小偏移包防止拉回，但可能导致卡住").defaultValue(true).build());
 
-    // --- 4. 其他设置补全 ---
+    // --- 4. 目标与过滤设置 ---
     private final Setting<Set<EntityType<?>>> entities = sgTargeting.add(new EntityTypeListSetting.Builder()
         .name("目标实体").defaultValue(Collections.singleton(EntityType.PLAYER)).build());
 
@@ -90,6 +90,14 @@ public class TpAura extends Module {
         .name("忽略命名").defaultValue(true).description("开启后不将命名实体设为攻击目标").build());
     private final Setting<Boolean> ignoreTamed = sgTargeting.add(new BoolSetting.Builder()
         .name("忽略驯服").defaultValue(false).description("开启后不将驯服的生物设为攻击目标").build());
+
+    // Y轴过滤功能
+    private final Setting<Boolean> yFilter = sgTargeting.add(new BoolSetting.Builder()
+        .name("Y轴过滤").defaultValue(false).description("开启后只攻击指定Y坐标范围内的实体").build());
+    private final Setting<Double> minY = sgTargeting.add(new DoubleSetting.Builder()
+        .name("最小Y").defaultValue(-64.0).min(-64.0).sliderMax(320.0).visible(yFilter::get).build());
+    private final Setting<Double> maxY = sgTargeting.add(new DoubleSetting.Builder()
+        .name("最大Y").defaultValue(320.0).min(-64.0).sliderMax(320.0).visible(yFilter::get).build());
 
     public enum ListMode { Whitelist, Blacklist, Off }
     private final Setting<ListMode> listMode = sgWhitelist.add(new EnumSetting.Builder<ListMode>()
@@ -108,10 +116,10 @@ public class TpAura extends Module {
         .name("图腾绕过").description("连续多次攻击以突破图腾无敌帧，仅Paper模式有效").defaultValue(false).build());
     private final Setting<Integer> totemAttacks = sgTotem.add(new IntSetting.Builder()
         .name("攻击次数").description("连续攻击次数(1-3)").defaultValue(2).min(1).max(3).sliderRange(1, 3)
-        .visible(() -> totemBypass.get()).build());
+        .visible(totemBypass::get).build());
     private final Setting<Integer> totemHeightIncrease = sgTotem.add(new IntSetting.Builder()
         .name("递增高度").description("每次额外攻击增加的下落高度").defaultValue(9).min(1).sliderRange(1, 100)
-        .visible(() -> totemBypass.get()).build());
+        .visible(totemBypass::get).build());
 
     private final List<Entity> targets = new ArrayList<>();
     private final List<Vec3d> renderPathNodes = new ArrayList<>();
@@ -366,8 +374,8 @@ public class TpAura extends Module {
      */
     private void paperTP(Vec3d from, Vec3d to) {
         if (mc.player.isShiftKeyDown()) {
-            Input lastInput = mc.player.getLastSentInput();
-            Input input = new Input(
+            PlayerInput lastInput = mc.player.getLastSentInput();
+            PlayerInput input = new PlayerInput(
                 lastInput.forward(),
                 lastInput.backward(),
                 lastInput.left(),
@@ -445,6 +453,11 @@ public class TpAura extends Module {
         if (!(entity instanceof LivingEntity) || !entity.isAlive() || entity == mc.player) return false;
         if (!entities.get().contains(entity.getType())) return false;
         if (mc.player.distanceTo(entity) > maxRange.get()) return false;
+
+        // --- 应用 Y轴过滤逻辑 ---
+        if (yFilter.get()) {
+            if (entity.getY() < minY.get() || entity.getY() > maxY.get()) return false;
+        }
 
         if (ignoreFriends.get() && entity instanceof PlayerEntity p && Friends.get().isFriend(p)) return false;
         if (ignoreNamed.get() && entity.hasCustomName()) return false;
