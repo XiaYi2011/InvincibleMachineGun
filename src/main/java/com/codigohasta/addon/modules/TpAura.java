@@ -23,19 +23,17 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.passive.TameableEntity;
+import net.minecraft.entity.player.Input;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.network.packet.c2s.play.CloseHandledScreenC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerInputC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerInteractEntityC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
-import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
-import net.minecraft.network.protocol.game.ServerboundPlayerInputPacket;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.entity.player.Input;
-
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -47,13 +45,13 @@ public class TpAura extends Module {
     private final SettingGroup sgWhitelist = settings.createGroup("白名单");
     private final SettingGroup sgRender = settings.createGroup("渲染");
 
-    // --- 1. Timing Settings ---
-    private final Setting<Double> attackDelay = sgTiming.add(new DoubleSetting.Builder()
+    // 额外延迟（毫秒）
+    private final Setting<Integer> attackDelayMs = sgTiming.add(new IntSetting.Builder()
         .name("额外延迟(ms)")
-        .description("攻击间隔，单位为毫秒，可小于1tick (50ms)")
+        .description("每次攻击后的冷却时间，单位毫秒")
         .defaultValue(0)
         .min(0)
-        .sliderMax(500)
+        .sliderMax(5000)
         .build());
 
     // --- 2. General Settings ---
@@ -121,7 +119,7 @@ public class TpAura extends Module {
     private int originalSlot = -1;
     private int silentSwapSlot = -1;
     private int silentSwapPrevSlot = -1;
-    private long lastAttackTime = 0; // 毫秒级时间戳
+    private long nextAttackTime = 0; // 下次允许攻击的时间戳
 
     public TpAura() {
         super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。抄袭了裤子条纹的tp。娱乐功能");
@@ -132,7 +130,7 @@ public class TpAura extends Module {
         originalSlot = -1;
         silentSwapSlot = -1;
         silentSwapPrevSlot = -1;
-        lastAttackTime = 0;
+        nextAttackTime = System.currentTimeMillis();
         renderPathNodes.clear();
     }
 
@@ -205,15 +203,14 @@ public class TpAura extends Module {
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
+        // 检查冷却
+        if (System.currentTimeMillis() < nextAttackTime) {
+            swapBackWeapon();
+            return;
+        }
 
         if (autoSwitch.get()) {
             if (!checkAndSwapWeapon()) return;
-        }
-
-        // 延迟检查（毫秒级）
-        if (System.currentTimeMillis() - lastAttackTime < attackDelay.get()) {
-            swapBackWeapon();
-            return;
         }
 
         targets.clear();
@@ -228,7 +225,8 @@ public class TpAura extends Module {
         executeTrouserAttack(currentTarget);
         swapBackWeapon();
 
-        lastAttackTime = System.currentTimeMillis();
+        // 设置下次攻击时间
+        nextAttackTime = System.currentTimeMillis() + attackDelayMs.get();
     }
 
     private void executeTrouserAttack(Entity target) {
@@ -363,6 +361,9 @@ public class TpAura extends Module {
         }
     }
 
+    /**
+     * 复刻 ICTP 的 PaperTP 逻辑，保证在 Paper 服务器下不回弹。
+     */
     private void paperTP(Vec3d from, Vec3d to) {
         if (mc.player.isShiftKeyDown()) {
             Input lastInput = mc.player.getLastSentInput();
@@ -375,16 +376,16 @@ public class TpAura extends Module {
                 false,
                 lastInput.sprint()
             );
-            mc.player.connection.send(new ServerboundPlayerInputPacket(input));
+            mc.player.connection.send(new PlayerInputC2SPacket(input));
         }
 
         double distance = from.distanceTo(to);
         int packetsRequired = (int) Math.ceil(Math.abs(distance / 10));
         for (int packetNumber = 0; packetNumber < (packetsRequired - 1); packetNumber++) {
-            mc.player.connection.send(new ServerboundMovePlayerPacket.StatusOnly(true, mc.player.horizontalCollision));
+            mc.player.connection.send(new PlayerMoveC2SPacket.OnGroundOnly(true, mc.player.horizontalCollision));
         }
 
-        mc.player.connection.send(new ServerboundMovePlayerPacket.Pos(to.x, to.y, to.z, true, mc.player.horizontalCollision));
+        mc.player.connection.send(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
     }
 
     private void sendMove(Vec3d pos) {
