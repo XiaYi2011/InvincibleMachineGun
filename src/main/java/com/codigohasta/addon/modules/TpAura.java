@@ -267,89 +267,127 @@ public class TpAura extends Module {
         nextAttackTime = System.currentTimeMillis() + attackDelayMs.get();
     }
 
-    // ========== 新的核心攻击逻辑 ==========
+    // ========== 核心攻击逻辑 ==========
     private void executeTrouserAttack(Entity target) {
-        Vec3d startPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
+        Vec3d playerPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         Vec3d targetPos = new Vec3d(target.getX(), target.getY(), target.getZ());
 
-        // 在目标半径6格球体内寻找最靠近玩家的合法站立点
-        Vec3d finalPos = findClosestValidPosInSphere(targetPos, startPos, 6.0);
+        // 确定服务器认为的当前位置（用于起点与目标搜索）
+        Vec3d serverPos = (expectedPos != null && expectedPos.squaredDistanceTo(playerPos) < 100.0) ? expectedPos : playerPos;
+
+        // 在目标半径6格球体内寻找最靠近玩家（服务器位置）的合法站立点
+        Vec3d finalPos = findClosestValidPosInSphere(targetPos, serverPos, 6.0);
         if (finalPos == null) return;
 
         if (mode.get() == Mode.Paper) {
-            paperAttack(target, startPos, finalPos);
+            paperAttack(target, serverPos, finalPos);
         } else {
-            vanillaAttack(target, startPos, finalPos);
+            vanillaAttack(target, serverPos, finalPos);
         }
     }
 
-    private void paperAttack(Entity target, Vec3d startPos, Vec3d finalPos) {
-        List<Vec3d> path = new ArrayList<>();
-        path.add(startPos);
+    private void paperAttack(Entity target, Vec3d serverPos, Vec3d finalPos) {
+        // 构建完整路径（去程+回程），再展开 maxSingleTpDist 分段
+        List<Vec3d> basePath = new ArrayList<>();
+        basePath.add(serverPos);
 
         if (goUp.get()) {
             double vh = vClipHeight.get();
-            Vec3d highStart = startPos.add(0, vh, 0);
-            Vec3d highTarget = finalPos.add(0, vh, 0);
-            path.add(highStart);
-            path.add(highTarget);
-            path.add(finalPos);
+            basePath.add(serverPos.add(0, vh, 0));          // highStart
+            basePath.add(finalPos.add(0, vh, 0));           // highTarget
+            basePath.add(finalPos);                          // target
         } else {
-            path.add(finalPos);
+            basePath.add(finalPos);
         }
 
+        // 回程节点
         if (returnPos.get()) {
             if (goUp.get()) {
-                path.add(finalPos.add(0, vClipHeight.get(), 0));
-                path.add(startPos.add(0, vClipHeight.get(), 0));
+                basePath.add(finalPos.add(0, vClipHeight.get(), 0)); // highTarget
+                basePath.add(serverPos.add(0, vClipHeight.get(), 0)); // highStart
             }
-            path.add(startPos);
-            if (offsetFix.get()) path.add(getOffset(startPos));
+            basePath.add(serverPos); // 回到起点
+            if (offsetFix.get()) {
+                basePath.add(getOffset(serverPos)); // 微小偏移
+            }
         } else {
-            if (offsetFix.get()) path.add(getOffset(finalPos));
-        }
-
-        // 预检：务必使用当前实际位置 startPos 作为起点
-        Vec3d serverPos = startPos;
-        for (int i = 1; i < path.size(); i++) {
-            if (isWrongMove(serverPos, path.get(i))) {
-                return;
+            if (offsetFix.get()) {
+                basePath.add(getOffset(finalPos));
             }
-            serverPos = path.get(i);
         }
 
-        // 执行传送
-        serverPos = startPos;
+        // 展开所有超过 maxSingleTpDist 的段
+        List<Vec3d> fullPath = new ArrayList<>();
+        double maxSeg = maxSingleTpDist.get();
+        for (int i = 0; i < basePath.size(); i++) {
+            if (i == 0) {
+                fullPath.add(basePath.get(0));
+                continue;
+            }
+            Vec3d from = basePath.get(i - 1);
+            Vec3d to = basePath.get(i);
+            if (maxSeg > 0 && from.distanceTo(to) > maxSeg) {
+                int segments = (int) Math.ceil(from.distanceTo(to) / maxSeg);
+                Vec3d dir = to.subtract(from).normalize();
+                double segLen = from.distanceTo(to) / segments;
+                Vec3d cur = from;
+                for (int j = 0; j < segments; j++) {
+                    cur = cur.add(dir.multiply(segLen));
+                    if (j == segments - 1) cur = to;
+                    fullPath.add(cur);
+                }
+            } else {
+                fullPath.add(to);
+            }
+        }
+
+        // 预检整条路径（从 serverPos 开始逐段模拟）
+        Vec3d checkFrom = serverPos;
+        for (int i = 1; i < fullPath.size(); i++) {
+            Vec3d next = fullPath.get(i);
+            if (isWrongMove(checkFrom, next)) {
+                return; // 预检失败，放弃攻击
+            }
+            checkFrom = next;
+        }
+
+        // 执行传送，逐步更新 expectedPos 与渲染路径
         expectedPos = serverPos;
         renderPathNodes.clear();
         renderPathNodes.add(serverPos);
 
-        for (int i = 1; i < path.size(); i++) {
-            Vec3d next = path.get(i);
-            doPaperTP(expectedPos, next);
+        for (int i = 1; i < fullPath.size(); i++) {
+            Vec3d next = fullPath.get(i);
+            paperTP(expectedPos, next);
             expectedPos = next;
             renderPathNodes.add(next);
         }
 
+        // 攻击
         if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
         mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
-        if (!returnPos.get()) {
+        // 回传模式下重置 expectedPos，让下次攻击从玩家实际位置开始
+        if (returnPos.get()) {
+            expectedPos = null;
+        } else {
+            // 不回传时同步客户端位置
             mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
         }
     }
 
-    private void vanillaAttack(Entity target, Vec3d startPos, Vec3d finalPos) {
+    private void vanillaAttack(Entity target, Vec3d serverPos, Vec3d finalPos) {
+        // Vanilla 模式保留原逻辑，但同样使用统一 serverPos 和路径
         List<Vec3d> path = new ArrayList<>();
         if (goUp.get()) {
             double vh = vClipHeight.get();
-            path.add(startPos.add(0, vh, 0));
+            path.add(serverPos.add(0, vh, 0));
             path.add(finalPos.add(0, vh, 0));
         }
         path.add(finalPos);
 
         renderPathNodes.clear();
-        renderPathNodes.add(startPos);
+        renderPathNodes.add(serverPos);
         renderPathNodes.addAll(path);
 
         int spam = 4;
@@ -366,9 +404,11 @@ public class TpAura extends Module {
 
         if (returnPos.get()) {
             Collections.reverse(path);
-            for (Vec3d p : path) sendMove(p);
-            sendMove(startPos);
-            Vec3d finalPosClient = offsetFix.get() ? getOffset(startPos) : startPos;
+            for (Vec3d p : path) {
+                sendMove(p);
+            }
+            sendMove(serverPos);
+            Vec3d finalPosClient = offsetFix.get() ? getOffset(serverPos) : serverPos;
             if (offsetFix.get()) sendMove(finalPosClient);
             expectedPos = finalPosClient;
         } else {
@@ -380,29 +420,6 @@ public class TpAura extends Module {
     }
 
     // ========== 传送方法 ==========
-    private void doPaperTP(Vec3d from, Vec3d to) {
-        double maxDist = maxSingleTpDist.get();
-        if (maxDist <= 0) {
-            paperTP(from, to);
-            return;
-        }
-        double dist = from.distanceTo(to);
-        if (dist <= maxDist) {
-            paperTP(from, to);
-            return;
-        }
-        int segments = (int) Math.ceil(dist / maxDist);
-        Vec3d direction = to.subtract(from).normalize();
-        double segLen = dist / segments;
-        Vec3d current = from;
-        for (int i = 0; i < segments; i++) {
-            Vec3d next = current.add(direction.multiply(segLen));
-            if (i == segments - 1) next = to;
-            paperTP(current, next);
-            current = next;
-        }
-    }
-
     private void paperTP(Vec3d from, Vec3d to) {
         if (mc.player.isSneaking()) {
             PlayerInput lastInput = mc.player.getLastPlayerInput();
@@ -432,7 +449,7 @@ public class TpAura extends Module {
         mc.player.networkHandler.sendPacket(packet);
     }
 
-    // ========== 服务器模拟 ==========
+    // ========== 服务器移动模拟 ==========
     private static final double MOVED_WRONGLY_THRESHOLD = 0.0625D;
 
     private boolean isWrongMove(Vec3d startPos, Vec3d endPos) {
@@ -569,14 +586,13 @@ public class TpAura extends Module {
         return false;
     }
 
-    // ========== 目标点搜索（优化版） ==========
+    private boolean isPositionValid(Vec3d pos, Vec3d from) {
+        return from.squaredDistanceTo(pos) < 100.0000000000001 && !isObstructed(pos) && !isWrongMove(from, pos);
+    }
+
+    // ========== 目标搜索 ==========
     private Vec3d findClosestValidPosInSphere(Vec3d targetPos, Vec3d playerPos, double radius) {
         BlockPos center = BlockPos.ofFloored(targetPos.x, targetPos.y, targetPos.z);
-        // 快速拒绝：如果玩家与目标中心距离超过16格，则半径6格内任意点离玩家都超过10格，不可能合法
-        if (playerPos.squaredDistanceTo(Vec3d.ofCenter(center)) > 16 * 16) {
-            return null;
-        }
-
         int r = (int) Math.ceil(radius);
         Vec3d best = null;
         double bestDistSq = Double.MAX_VALUE;
@@ -588,12 +604,8 @@ public class TpAura extends Module {
                     Vec3d stand = Vec3d.ofBottomCenter(bp).add(0, 1, 0);
                     if (stand.distanceTo(targetPos) > radius) continue;
 
-                    double distSq = playerPos.squaredDistanceTo(stand);
-                    // 距离玩家太远必然不合法，提前跳过
-                    if (distSq >= 100.0000000000001) continue;
-
-                    // 内联合法性判断，避免重复计算距离
-                    if (!isObstructed(stand) && !isWrongMove(playerPos, stand)) {
+                    if (isPositionValid(stand, playerPos)) {
+                        double distSq = playerPos.squaredDistanceTo(stand);
                         if (distSq < bestDistSq) {
                             bestDistSq = distSq;
                             best = stand;
@@ -671,11 +683,11 @@ public class TpAura extends Module {
             if (antiLagRetries < 3) {
                 event.cancel();
                 mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
-                doPaperTP(serverPos, expectedPos);
+                paperTP(serverPos, expectedPos);  // 重试从当前服务器位置到期望位置
                 antiLagRetries++;
                 lastAntiLagTime = System.currentTimeMillis();
             } else {
-                expectedPos = null;
+                expectedPos = null; // 放弃
             }
         }
     }
