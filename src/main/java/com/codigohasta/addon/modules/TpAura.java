@@ -46,7 +46,7 @@ public class TpAura extends Module {
     private final SettingGroup sgWhitelist = settings.createGroup("白名单");
     private final SettingGroup sgRender = settings.createGroup("渲染");
 
-    // 额外延迟（毫秒） - 现在真正支持毫秒级
+    // 额外延迟（毫秒） - 真正支持毫秒级
     private final Setting<Integer> attackDelayMs = sgTiming.add(new IntSetting.Builder()
         .name("额外延迟(ms)")
         .description("每次攻击后的冷却时间，单位毫秒")
@@ -232,11 +232,10 @@ public class TpAura extends Module {
     }
 
     /**
-     * 使用 RenderEvent.Pre 替代 TickEvent，获取更高的检查频率（每帧触发）。
-     * 利用 System.nanoTime() 精确控制延迟。
+     * 高频攻击检查：监听 Render3DEvent，每帧执行，突破 20TPS 限制。
      */
     @EventHandler
-    private void onRenderPre(Render3DEvent.Pre event) {
+    private void onRenderAttack(Render3DEvent event) {
         if (mc.player == null || mc.world == null) return;
 
         if (autoSwitch.get()) {
@@ -256,22 +255,18 @@ public class TpAura extends Module {
             executeTrouserAttack(currentTarget);
             attacksThisFrame++;
 
-            // 累加 nextAttackTime，避免 drift
             if (delayNs > 0) {
                 nextAttackTime += delayNs;
-                if (now >= nextAttackTime) nextAttackTime = now + delayNs; // 防止堆积
+                if (now >= nextAttackTime) nextAttackTime = now + delayNs;
             } else {
-                // 延迟为 0 时至少确保一次攻击，然后跳到当前时间
                 nextAttackTime = now;
                 break;
             }
         }
 
-        // 如果没有进行攻击，释放武器切换
         if (attacksThisFrame == 0) {
             swapBackWeapon();
         } else {
-            // 攻击后统一释放
             swapBackWeapon();
         }
     }
