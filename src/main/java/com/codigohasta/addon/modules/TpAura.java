@@ -41,6 +41,8 @@ import org.jetbrains.annotations.Nullable;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static meteordevelopment.meteorclient.MeteorClient.mc;
+
 public class TpAura extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgTiming = settings.createGroup("攻击机制");
@@ -76,6 +78,8 @@ public class TpAura extends Module {
         .name("偏移同步").description("发送微小偏移包防止拉回").defaultValue(true).build());
     private final Setting<Boolean> antiLag = sgTP.add(new BoolSetting.Builder()
         .name("反拉回").defaultValue(true).build());
+    private final Setting<Integer> antiLagMaxTries = sgTP.add(new IntSetting.Builder()
+        .name("反拉回最大尝试").defaultValue(10).min(1).sliderMax(30).visible(antiLag::get).build());
     private final Setting<Double> maxSingleTpDist = sgTP.add(new DoubleSetting.Builder()
         .name("最大单次传送距离").defaultValue(0.0).min(0).sliderMax(100).build());
 
@@ -119,7 +123,6 @@ public class TpAura extends Module {
     private Vec3d expectedPos = null;
 
     private int antiLagRetries = 0;
-    private long lastAntiLagTime = 0;
 
     private static final double movedWronglyThreshold = 0.0625D;
 
@@ -140,9 +143,9 @@ public class TpAura extends Module {
 
     @Override
     public void onDeactivate() {
-        if (silentSwapSlot != -1 && meteordevelopment.meteorclient.MeteorClient.mc.player != null) swapBackWeapon();
-        if (originalSlot != -1 && autoSwitch.get() && !silentSwap.get() && meteordevelopment.meteorclient.MeteorClient.mc.player != null) {
-            ((InventoryAccessor) meteordevelopment.meteorclient.MeteorClient.mc.player.getInventory()).setSelectedSlot(originalSlot);
+        if (silentSwapSlot != -1 && mc.player != null) swapBackWeapon();
+        if (originalSlot != -1 && autoSwitch.get() && !silentSwap.get() && mc.player != null) {
+            ((InventoryAccessor) mc.player.getInventory()).setSelectedSlot(originalSlot);
             originalSlot = -1;
         }
         expectedPos = null;
@@ -150,7 +153,7 @@ public class TpAura extends Module {
 
     private int findWeaponInventorySlot() {
         for (int i = 0; i < 45; i++) {
-            String name = meteordevelopment.meteorclient.MeteorClient.mc.player.getInventory().getStack(i).getItem().toString().toLowerCase();
+            String name = mc.player.getInventory().getStack(i).getItem().toString().toLowerCase();
             if (name.contains("sword") || name.contains("mace") || name.contains("axe")) {
                 return i < 9 ? i + 36 : i;
             }
@@ -159,7 +162,7 @@ public class TpAura extends Module {
     }
 
     private boolean checkAndSwapWeapon() {
-        String itemMain = meteordevelopment.meteorclient.MeteorClient.mc.player.getMainHandStack().getItem().toString().toLowerCase();
+        String itemMain = mc.player.getMainHandStack().getItem().toString().toLowerCase();
         boolean isWeapon = itemMain.contains("sword") || itemMain.contains("mace") || itemMain.contains("axe");
         if (isWeapon && !(requireMace.get() && !itemMain.contains("mace"))) return true;
 
@@ -167,11 +170,11 @@ public class TpAura extends Module {
             int slot = findWeaponInventorySlot();
             if (slot != -1) {
                 silentSwapSlot = slot;
-                silentSwapPrevSlot = ((InventoryAccessor) meteordevelopment.meteorclient.MeteorClient.mc.player.getInventory()).getSelectedSlot();
+                silentSwapPrevSlot = ((InventoryAccessor) mc.player.getInventory()).getSelectedSlot();
                 if (slot >= 36) {
                     InventoryUtil.switchToSlot(slot - 36);
                 } else {
-                    meteordevelopment.meteorclient.MeteorClient.mc.interactionManager.clickSlot(meteordevelopment.meteorclient.MeteorClient.mc.player.currentScreenHandler.syncId, slot, 0, SlotActionType.SWAP, meteordevelopment.meteorclient.MeteorClient.mc.player);
+                    mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, slot, 0, SlotActionType.SWAP, mc.player);
                     InventoryUtil.switchToSlot(0);
                 }
                 return true;
@@ -182,7 +185,7 @@ public class TpAura extends Module {
                 return name.contains("sword") || name.contains("mace") || name.contains("axe");
             }, 0, 8);
             if (weapon.found()) {
-                if (originalSlot == -1) originalSlot = ((InventoryAccessor) meteordevelopment.meteorclient.MeteorClient.mc.player.getInventory()).getSelectedSlot();
+                if (originalSlot == -1) originalSlot = ((InventoryAccessor) mc.player.getInventory()).getSelectedSlot();
                 InvUtils.swap(weapon.slot(), false);
                 return true;
             }
@@ -195,9 +198,9 @@ public class TpAura extends Module {
         if (silentSwapSlot >= 36) {
             InventoryUtil.switchToSlot(silentSwapPrevSlot);
         } else {
-            meteordevelopment.meteorclient.MeteorClient.mc.interactionManager.clickSlot(meteordevelopment.meteorclient.MeteorClient.mc.player.currentScreenHandler.syncId, silentSwapSlot, 0, SlotActionType.SWAP, meteordevelopment.meteorclient.MeteorClient.mc.player);
+            mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, silentSwapSlot, 0, SlotActionType.SWAP, mc.player);
             InventoryUtil.switchToSlot(silentSwapPrevSlot);
-            meteordevelopment.meteorclient.MeteorClient.mc.player.networkHandler.sendPacket(new CloseHandledScreenC2SPacket(meteordevelopment.meteorclient.MeteorClient.mc.player.currentScreenHandler.syncId));
+            mc.player.networkHandler.sendPacket(new CloseHandledScreenC2SPacket(mc.player.currentScreenHandler.syncId));
         }
         silentSwapSlot = -1;
         silentSwapPrevSlot = -1;
@@ -205,7 +208,7 @@ public class TpAura extends Module {
 
     @EventHandler
     private void onTick(TickEvent.Pre event) {
-        if (meteordevelopment.meteorclient.MeteorClient.mc.player == null || meteordevelopment.meteorclient.MeteorClient.mc.world == null) return;
+        if (mc.player == null || mc.world == null) return;
 
         if (System.currentTimeMillis() < nextAttackTime) {
             swapBackWeapon();
@@ -246,11 +249,14 @@ public class TpAura extends Module {
 
     private boolean executeTrouserAttack(Entity target) {
         renderPathNodes.clear();
-        Vec3d startPos = new Vec3d(meteordevelopment.meteorclient.MeteorClient.mc.player.getX(), meteordevelopment.meteorclient.MeteorClient.mc.player.getY(), meteordevelopment.meteorclient.MeteorClient.mc.player.getZ());
+        Vec3d startPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         Vec3d targetCenter = target.getBoundingBox().getCenter();
 
         Vec3d finalPos = findNearestLegalToTarget(startPos, targetCenter, 6.0);
         if (finalPos == null) return false;
+
+        // 每次成功攻击重置反拉回计数
+        antiLagRetries = 0;
 
         if (mode.get() == Mode.Paper) {
             if (goUp.get()) {
@@ -284,8 +290,8 @@ public class TpAura extends Module {
                 doPaperTP(current, finalPos);
                 current = finalPos; expectedPos = current;
 
-                if (swingHand.get()) meteordevelopment.meteorclient.MeteorClient.mc.player.swingHand(Hand.MAIN_HAND);
-                meteordevelopment.meteorclient.MeteorClient.mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, meteordevelopment.meteorclient.MeteorClient.mc.player.isSneaking()));
+                if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+                mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
                 if (returnPos.get()) {
                     if (isObstructed(highStart) || isObstructed(highTarget) || isObstructed(finalPos)) return false;
@@ -313,9 +319,10 @@ public class TpAura extends Module {
                     } else {
                         expectedPos = finalPos;
                     }
-                    meteordevelopment.meteorclient.MeteorClient.mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
+                    mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
                 }
             } else {
+                // 无 V-Clip 直接传送
                 if (!isWholeTpValid(startPos, finalPos)) return false;
 
                 buildRenderPath(startPos, finalPos);
@@ -326,8 +333,8 @@ public class TpAura extends Module {
                 current = finalPos;
                 expectedPos = current;
 
-                if (swingHand.get()) meteordevelopment.meteorclient.MeteorClient.mc.player.swingHand(Hand.MAIN_HAND);
-                meteordevelopment.meteorclient.MeteorClient.mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, meteordevelopment.meteorclient.MeteorClient.mc.player.isSneaking()));
+                if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+                mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
                 if (returnPos.get()) {
                     if (!isWholeTpValid(current, startPos)) return false;
@@ -347,7 +354,7 @@ public class TpAura extends Module {
                     } else {
                         expectedPos = finalPos;
                     }
-                    meteordevelopment.meteorclient.MeteorClient.mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
+                    mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
                 }
             }
         } else {
@@ -367,15 +374,15 @@ public class TpAura extends Module {
 
             int spam = 4;
             for (int i = 0; i < spam; i++) {
-                meteordevelopment.meteorclient.MeteorClient.mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, meteordevelopment.meteorclient.MeteorClient.mc.player.horizontalCollision));
+                mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, mc.player.horizontalCollision));
             }
             if (goUp.get()) {
                 sendMove(highStart2);
                 sendMove(highTarget2);
             }
             sendMove(finalPos2);
-            if (swingHand.get()) meteordevelopment.meteorclient.MeteorClient.mc.player.swingHand(Hand.MAIN_HAND);
-            meteordevelopment.meteorclient.MeteorClient.mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, meteordevelopment.meteorclient.MeteorClient.mc.player.isSneaking()));
+            if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+            mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
             if (returnPos.get()) {
                 if (goUp.get()) {
@@ -390,7 +397,7 @@ public class TpAura extends Module {
                 Vec3d finalPosClient = offsetFix.get() ? getOffset(finalPos2) : finalPos2;
                 if (offsetFix.get()) sendMove(finalPosClient);
                 expectedPos = finalPosClient;
-                meteordevelopment.meteorclient.MeteorClient.mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
+                mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
             }
         }
         return true;
@@ -499,8 +506,8 @@ public class TpAura extends Module {
     }
 
     private void paperTP(Vec3d from, Vec3d to) {
-        if (meteordevelopment.meteorclient.MeteorClient.mc.player.isSneaking()) {
-            PlayerInput lastInput = meteordevelopment.meteorclient.MeteorClient.mc.player.getLastPlayerInput();
+        if (mc.player.isSneaking()) {
+            PlayerInput lastInput = mc.player.getLastPlayerInput();
             PlayerInput input = new PlayerInput(
                 lastInput.forward(),
                 lastInput.backward(),
@@ -510,18 +517,18 @@ public class TpAura extends Module {
                 false,
                 lastInput.sprint()
             );
-            meteordevelopment.meteorclient.MeteorClient.mc.player.networkHandler.sendPacket(new PlayerInputC2SPacket(input));
+            mc.player.networkHandler.sendPacket(new PlayerInputC2SPacket(input));
         }
 
         double distance = from.distanceTo(to);
         int packetsRequired = (int) Math.ceil(distance / 10);
         for (int i = 0; i < packetsRequired - 1; i++) {
-            meteordevelopment.meteorclient.MeteorClient.mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(true, meteordevelopment.meteorclient.MeteorClient.mc.player.horizontalCollision));
+            mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(true, mc.player.horizontalCollision));
         }
-        meteordevelopment.meteorclient.MeteorClient.mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, meteordevelopment.meteorclient.MeteorClient.mc.player.horizontalCollision));
+        mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
     }
 
-    // ---------- ICTP 移植检测（全部改为实例方法，使用完整限定名访问 mc） ----------
+    // ---------- ICTP 移植检测 ----------
     private boolean isWholeTpValid(Vec3d startPos, Vec3d endPos) {
         return startPos.squaredDistanceTo(endPos) < 40000.0000000000001 &&
                !isWrongMove(startPos, endPos) &&
@@ -554,22 +561,22 @@ public class TpAura extends Module {
     }
 
     private Vec3d adjustMovementForCollisions(Vec3d startPos, Vec3d movement) {
-        Box box = meteordevelopment.meteorclient.MeteorClient.mc.player.getBoundingBox().offset(meteordevelopment.meteorclient.MeteorClient.mc.player.getEntityPos().negate()).offset(startPos);
-        List<VoxelShape> list = meteordevelopment.meteorclient.MeteorClient.mc.world.getEntityCollisions(meteordevelopment.meteorclient.MeteorClient.mc.player, box.stretch(movement));
-        Vec3d vec3d = movement.lengthSquared() == 0.0 ? movement : adjustMovementForCollisions(meteordevelopment.meteorclient.MeteorClient.mc.player, movement, box, meteordevelopment.meteorclient.MeteorClient.mc.world, list);
+        Box box = mc.player.getBoundingBox().offset(mc.player.getEntityPos().negate()).offset(startPos);
+        List<VoxelShape> list = mc.world.getEntityCollisions(mc.player, box.stretch(movement));
+        Vec3d vec3d = movement.lengthSquared() == 0.0 ? movement : adjustMovementForCollisions(mc.player, movement, box, mc.world, list);
         boolean bl = movement.x != vec3d.x;
         boolean bl2 = movement.y != vec3d.y;
         boolean bl3 = movement.z != vec3d.z;
-        boolean bl4 = meteordevelopment.meteorclient.MeteorClient.mc.player.isOnGround() || bl2 && movement.y < 0.0;
+        boolean bl4 = mc.player.isOnGround() || bl2 && movement.y < 0.0;
         if (bl4 && (bl || bl3)) {
-            Vec3d vec3d2 = adjustMovementForCollisions(meteordevelopment.meteorclient.MeteorClient.mc.player, new Vec3d(movement.x, 1.0, movement.z), box, meteordevelopment.meteorclient.MeteorClient.mc.world, list);
-            Vec3d vec3d3 = adjustMovementForCollisions(meteordevelopment.meteorclient.MeteorClient.mc.player, new Vec3d(0.0, 1.0, 0.0), box.stretch(movement.x, 0.0, movement.z), meteordevelopment.meteorclient.MeteorClient.mc.world, list);
+            Vec3d vec3d2 = adjustMovementForCollisions(mc.player, new Vec3d(movement.x, 1.0, movement.z), box, mc.world, list);
+            Vec3d vec3d3 = adjustMovementForCollisions(mc.player, new Vec3d(0.0, 1.0, 0.0), box.stretch(movement.x, 0.0, movement.z), mc.world, list);
             if (vec3d3.y < 1.0) {
-                Vec3d vec3d4 = adjustMovementForCollisions(meteordevelopment.meteorclient.MeteorClient.mc.player, new Vec3d(movement.x, 0.0, movement.z), box.offset(vec3d3), meteordevelopment.meteorclient.MeteorClient.mc.world, list).add(vec3d3);
+                Vec3d vec3d4 = adjustMovementForCollisions(mc.player, new Vec3d(movement.x, 0.0, movement.z), box.offset(vec3d3), mc.world, list).add(vec3d3);
                 if (vec3d4.horizontalLengthSquared() > vec3d2.horizontalLengthSquared()) vec3d2 = vec3d4;
             }
             if (vec3d2.horizontalLengthSquared() > vec3d.horizontalLengthSquared())
-                return vec3d2.add(adjustMovementForCollisions(meteordevelopment.meteorclient.MeteorClient.mc.player, new Vec3d(0.0, -vec3d2.y + movement.y, 0.0), box.offset(vec3d2), meteordevelopment.meteorclient.MeteorClient.mc.world, list));
+                return vec3d2.add(adjustMovementForCollisions(mc.player, new Vec3d(0.0, -vec3d2.y + movement.y, 0.0), box.offset(vec3d2), mc.world, list));
         }
         return vec3d;
     }
@@ -608,33 +615,34 @@ public class TpAura extends Module {
     private double clampVertical(double d) { return MathHelper.clamp(d, -2.0E7D, 2.0E7D); }
 
     private boolean isObstructed(Vec3d pos) {
-        Box box = meteordevelopment.meteorclient.MeteorClient.mc.player.getBoundingBox().offset(meteordevelopment.meteorclient.MeteorClient.mc.player.getEntityPos().negate()).offset(pos);
+        Box box = mc.player.getBoundingBox().offset(mc.player.getEntityPos().negate()).offset(pos);
         box = box.expand(-0.0001, -0.0001, -0.0001);
-        for (VoxelShape v : meteordevelopment.meteorclient.MeteorClient.mc.world.getBlockCollisions(meteordevelopment.meteorclient.MeteorClient.mc.player, box)) return true;
+        for (VoxelShape v : mc.world.getBlockCollisions(mc.player, box)) return true;
         return false;
     }
 
     private void sendMove(Vec3d pos) {
         PlayerMoveC2SPacket packet = new PlayerMoveC2SPacket.PositionAndOnGround(pos.x, pos.y, pos.z, false, false);
         ((IPlayerMoveC2SPacket) packet).meteor$setTag(1337);
-        meteordevelopment.meteorclient.MeteorClient.mc.player.networkHandler.sendPacket(packet);
+        mc.player.networkHandler.sendPacket(packet);
     }
 
     @EventHandler
     private void onPacketReceive(PacketEvent.Receive event) {
-        if (meteordevelopment.meteorclient.MeteorClient.mc.player == null || meteordevelopment.meteorclient.MeteorClient.mc.world == null || !antiLag.get() || expectedPos == null) return;
+        if (mc.player == null || mc.world == null || !antiLag.get() || expectedPos == null) return;
         if (event.packet instanceof PlayerPositionLookS2CPacket packet) {
-            if (System.currentTimeMillis() - lastAntiLagTime > 1000) antiLagRetries = 0;
+            // 不再基于时间重置，而是每次攻击成功后重置 antiLagRetries
             Vec3d serverPos = packet.change().position();
             double dist = serverPos.distanceTo(expectedPos);
             if (dist > maxRange.get() || dist < 0.01) return;
-            if (antiLagRetries < 3) {
+
+            if (antiLagRetries < antiLagMaxTries.get()) {
                 event.cancel();
-                meteordevelopment.meteorclient.MeteorClient.mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
+                mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
                 doPaperTP(serverPos, expectedPos);
                 antiLagRetries++;
-                lastAntiLagTime = System.currentTimeMillis();
             } else {
+                // 尝试次数用尽，放弃
                 expectedPos = null;
             }
         }
@@ -674,21 +682,21 @@ public class TpAura extends Module {
     }
 
     private boolean invalid(Vec3d pos) {
-        if (meteordevelopment.meteorclient.MeteorClient.mc.world == null) return true;
+        if (mc.world == null) return true;
         BlockPos bp = BlockPos.ofFloored(pos.x, pos.y, pos.z);
-        if (meteordevelopment.meteorclient.MeteorClient.mc.world.getChunk(bp.getX() >> 4, bp.getZ() >> 4) == null) return true;
-        Box box = meteordevelopment.meteorclient.MeteorClient.mc.player.getBoundingBox().offset(pos.subtract(new Vec3d(meteordevelopment.meteorclient.MeteorClient.mc.player.getX(), meteordevelopment.meteorclient.MeteorClient.mc.player.getY(), meteordevelopment.meteorclient.MeteorClient.mc.player.getZ())));
+        if (mc.world.getChunk(bp.getX() >> 4, bp.getZ() >> 4) == null) return true;
+        Box box = mc.player.getBoundingBox().offset(pos.subtract(new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ())));
         for (BlockPos bPos : BlockPos.iterate(BlockPos.ofFloored(box.minX, box.minY, box.minZ), BlockPos.ofFloored(box.maxX, box.maxY, box.maxZ))) {
-            BlockState state = meteordevelopment.meteorclient.MeteorClient.mc.world.getBlockState(bPos);
-            if (!state.getCollisionShape(meteordevelopment.meteorclient.MeteorClient.mc.world, bPos).isEmpty() || state.isOf(Blocks.LAVA)) return true;
+            BlockState state = mc.world.getBlockState(bPos);
+            if (!state.getCollisionShape(mc.world, bPos).isEmpty() || state.isOf(Blocks.LAVA)) return true;
         }
         return false;
     }
 
     private boolean entityCheck(Entity entity) {
-        if (!(entity instanceof LivingEntity) || !entity.isAlive() || entity == meteordevelopment.meteorclient.MeteorClient.mc.player) return false;
+        if (!(entity instanceof LivingEntity) || !entity.isAlive() || entity == mc.player) return false;
         if (!entities.get().contains(entity.getType())) return false;
-        if (meteordevelopment.meteorclient.MeteorClient.mc.player.distanceTo(entity) > maxRange.get()) return false;
+        if (mc.player.distanceTo(entity) > maxRange.get()) return false;
         if (enableYFilter.get()) {
             double y = entity.getY();
             if (y < minY.get() || y > maxY.get()) return false;
