@@ -80,6 +80,12 @@ public class TpAura extends Module {
         .name("V-Clip 高度").defaultValue(22.0).min(1).sliderMax(100).visible(goUp::get).build());
     private final Setting<Boolean> returnPos = sgTP.add(new BoolSetting.Builder()
         .name("攻击后回传").defaultValue(true).build());
+    private final Setting<Boolean> noThroughWalls = sgTP.add(new BoolSetting.Builder()
+        .name("不穿墙")
+        .description("关闭V-Clip时若路径穿墙则放弃攻击，防止返回时卡墙")
+        .defaultValue(false)
+        .visible(() -> !goUp.get() && returnPos.get())
+        .build());
     private final Setting<Boolean> offsetFix = sgTP.add(new BoolSetting.Builder()
         .name("偏移同步").description("发送微小偏移包防止拉回").defaultValue(true).build());
     private final Setting<Boolean> antiLag = sgTP.add(new BoolSetting.Builder()
@@ -134,7 +140,7 @@ public class TpAura extends Module {
     private static final double movedWronglyThreshold = 0.0625D;
 
     public TpAura() {
-        super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。智能V-Clip，路径碰撞检测。");
+        super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。智能V-Clip，不穿墙选项。");
     }
 
     @Override
@@ -159,6 +165,7 @@ public class TpAura extends Module {
     }
 
     private int findWeaponInventorySlot() {
+        if (mc.player == null) return -1;
         for (int i = 0; i < 45; i++) {
             String name = mc.player.getInventory().getStack(i).getItem().toString().toLowerCase();
             if (name.contains("sword") || name.contains("mace") || name.contains("axe")) {
@@ -169,6 +176,7 @@ public class TpAura extends Module {
     }
 
     private boolean checkAndSwapWeapon() {
+        if (mc.player == null) return false;
         String itemMain = mc.player.getMainHandStack().getItem().toString().toLowerCase();
         boolean isWeapon = itemMain.contains("sword") || itemMain.contains("mace") || itemMain.contains("axe");
         if (isWeapon && !(requireMace.get() && !itemMain.contains("mace"))) return true;
@@ -201,7 +209,7 @@ public class TpAura extends Module {
     }
 
     private void swapBackWeapon() {
-        if (silentSwapSlot == -1) return;
+        if (mc.player == null || silentSwapSlot == -1) return;
         if (silentSwapSlot >= 36) {
             InventoryUtil.switchToSlot(silentSwapPrevSlot);
         } else {
@@ -255,6 +263,7 @@ public class TpAura extends Module {
     }
 
     private boolean executeTrouserAttack(Entity target) {
+        if (mc.player == null || mc.world == null) return false;
         renderPathNodes.clear();
         Vec3d startPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         Vec3d targetCenter = target.getBoundingBox().getCenter();
@@ -263,17 +272,22 @@ public class TpAura extends Module {
         if (finalPos == null) return false;
 
         if (mode.get() == Mode.Paper) {
-            // 智能V-Clip：如果goUp开启且smartVClip开启，先尝试直接传送
             boolean useVClip = goUp.get();
             if (goUp.get() && smartVClip.get()) {
-                // 尝试直接传送：检查 startPos -> finalPos 是否合法
                 if (isWholeTpValid(startPos, finalPos)) {
-                    useVClip = false; // 直接路径可用
+                    useVClip = false;
                 }
             }
 
             if (!useVClip) {
                 // 无V-Clip直接传送
+                if (!isWholeTpValid(startPos, finalPos)) return false;
+
+                // 不穿墙检查
+                if (noThroughWalls.get() && isPathObstructed(startPos, finalPos)) {
+                    return false;
+                }
+
                 buildRenderPath(startPos, finalPos);
 
                 Vec3d current = startPos;
@@ -366,7 +380,7 @@ public class TpAura extends Module {
                 }
             }
         } else {
-            // Vanilla 模式（保留）
+            // Vanilla 模式保留
             Vec3d finalPos2 = finalPos;
             double vHeight2 = vClipHeight.get();
             Vec3d highStart2 = startPos.add(0, vHeight2, 0);
@@ -429,6 +443,7 @@ public class TpAura extends Module {
     }
 
     private Vec3d findNearestLegalToTarget(Vec3d targetCenter, double radius) {
+        if (mc.player == null) return null;
         double bestDistSq = Double.MAX_VALUE;
         Vec3d bestPos = null;
 
@@ -491,6 +506,7 @@ public class TpAura extends Module {
     }
 
     private void doPaperTP(Vec3d from, Vec3d to) {
+        if (mc.player == null || mc.world == null) return;
         double maxDist = maxSingleTpDist.get();
         if (maxDist <= 0) {
             paperTP(from, to);
@@ -514,6 +530,7 @@ public class TpAura extends Module {
     }
 
     private void paperTP(Vec3d from, Vec3d to) {
+        if (mc.player == null || mc.world == null) return;
         if (mc.player.isSneaking()) {
             PlayerInput lastInput = mc.player.getLastPlayerInput();
             PlayerInput input = new PlayerInput(
@@ -536,8 +553,9 @@ public class TpAura extends Module {
         mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
     }
 
-    // ---------- ICTP 传送合法性检测（实例方法） ----------
+    // ---------- ICTP 传送合法性检测 ----------
     private boolean isWholeTpValid(Vec3d startPos, Vec3d endPos) {
+        if (mc.player == null || mc.world == null) return false;
         return startPos.squaredDistanceTo(endPos) < 40000.0000000000001 &&
                !isWrongMove(startPos, endPos) &&
                !isObstructed(endPos);
@@ -548,6 +566,7 @@ public class TpAura extends Module {
     }
 
     private double getSquaredMovementDelta(Vec3d startPos, Vec3d endPos) {
+        if (mc.player == null || mc.world == null) return 0;
         double d0 = clampHorizontal(endPos.getX());
         double d1 = clampVertical(endPos.getY());
         double d2 = clampHorizontal(endPos.getZ());
@@ -569,6 +588,7 @@ public class TpAura extends Module {
     }
 
     private Vec3d adjustMovementForCollisions(Vec3d startPos, Vec3d movement) {
+        if (mc.player == null || mc.world == null) return Vec3d.ZERO;
         Box box = mc.player.getBoundingBox().offset(mc.player.getEntityPos().negate()).offset(startPos);
         List<VoxelShape> list = mc.world.getEntityCollisions(mc.player, box.stretch(movement));
         Vec3d vec3d = movement.lengthSquared() == 0.0 ? movement : adjustMovementForCollisions(mc.player, movement, box, mc.world, list);
@@ -623,13 +643,32 @@ public class TpAura extends Module {
     private static double clampVertical(double d) { return MathHelper.clamp(d, -2.0E7D, 2.0E7D); }
 
     private boolean isObstructed(Vec3d pos) {
+        if (mc.player == null || mc.world == null) return true;
         Box box = mc.player.getBoundingBox().offset(mc.player.getEntityPos().negate()).offset(pos);
         box = box.expand(-0.0001, -0.0001, -0.0001);
         for (VoxelShape v : mc.world.getBlockCollisions(mc.player, box)) return true;
         return false;
     }
 
+    private boolean isPathObstructed(Vec3d from, Vec3d to) {
+        if (mc.player == null || mc.world == null) return true;
+        double dx = to.x - from.x;
+        double dy = to.y - from.y;
+        double dz = to.z - from.z;
+        double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist < 0.001) return false;
+        double step = 0.1;
+        int steps = (int) Math.ceil(dist / step);
+        for (int i = 0; i <= steps; i++) {
+            double t = i / (double) steps;
+            Vec3d point = from.add(dx * t, dy * t, dz * t);
+            if (isObstructed(point)) return true;
+        }
+        return false;
+    }
+
     private void sendMove(Vec3d pos) {
+        if (mc.player == null) return;
         PlayerMoveC2SPacket packet = new PlayerMoveC2SPacket.PositionAndOnGround(pos.x, pos.y, pos.z, false, false);
         ((IPlayerMoveC2SPacket) packet).meteor$setTag(1337);
         mc.player.networkHandler.sendPacket(packet);
@@ -680,6 +719,7 @@ public class TpAura extends Module {
     }
 
     private Vec3d getOffset(Vec3d base) {
+        if (mc.player == null || mc.world == null) return base;
         double dx = 0.05, dy = 0.01;
         List<Vec3d> offsets = Arrays.asList(base.add(dx, dy, 0), base.add(-dx, dy, 0), base.add(0, dy, dx), base.add(0, dy, -dx));
         Collections.shuffle(offsets);
@@ -700,6 +740,7 @@ public class TpAura extends Module {
     }
 
     private boolean entityCheck(Entity entity) {
+        if (mc.player == null) return false;
         if (!(entity instanceof LivingEntity) || !entity.isAlive() || entity == mc.player) return false;
         if (!entities.get().contains(entity.getType())) return false;
         if (mc.player.distanceTo(entity) > maxRange.get()) return false;
