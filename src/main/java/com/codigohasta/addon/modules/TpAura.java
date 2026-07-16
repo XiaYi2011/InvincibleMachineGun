@@ -64,7 +64,7 @@ public class TpAura extends Module {
         .name("挥手").defaultValue(true).build());
     private final Setting<Boolean> silentSwap = sgGeneral.add(new BoolSetting.Builder()
         .name("静默切换").description("使用数据包切换武器（无动画、无声音）")
-        .defaultValue(true).visible(() -> autoSwitch.get()).build());
+        .defaultValue(true).visible(autoSwitch::get).build());
 
     // 传送设置
     public enum Mode { Vanilla, Paper }
@@ -136,6 +136,12 @@ public class TpAura extends Module {
         .name("轨迹颜色").defaultValue(new SettingColor(255, 0, 0, 100)).build());
     private final Setting<SettingColor> targetColor = sgRender.add(new ColorSetting.Builder()
         .name("目标颜色").defaultValue(new SettingColor(255, 0, 0, 200)).build());
+    private final Setting<Boolean> renderIntermediateNodes = sgRender.add(new BoolSetting.Builder()
+        .name("渲染中间点")
+        .description("当单次传送距离受限时，是否渲染分段传送的中间点")
+        .defaultValue(true)
+        .visible(() -> maxSingleTpDist.get() > 0)
+        .build());
 
     // 内部变量
     private final List<Entity> targets = new ArrayList<>();
@@ -146,6 +152,10 @@ public class TpAura extends Module {
     private int silentSwapPrevSlot = -1;
     private long nextAttackTime = 0;
     private Vec3d expectedPos = null;
+    
+    // 反拉回重试控制喵～
+    private int antiLagRetries = 0;
+    private long lastAntiLagTime = 0;
 
     public TpAura() {
         super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。路径碰撞检测，单次传送距离限制");
@@ -159,6 +169,7 @@ public class TpAura extends Module {
         nextAttackTime = System.currentTimeMillis();
         renderPathNodes.clear();
         expectedPos = null;
+        antiLagRetries = 0;
     }
 
     @Override
@@ -261,35 +272,29 @@ public class TpAura extends Module {
         if (finalPos == null) return;
 
         if (mode.get() == Mode.Paper) {
-            // 横向路径碰撞检测
             if (!goUp.get()) {
-                // 无 V-Clip：检查从玩家到目标点的直线
                 if (isPathObstructed(startPos, finalPos)) {
-                    return; // 放弃目标
+                    return; 
                 }
             } else {
                 double vHeight = vClipHeight.get();
                 Vec3d highStart = startPos.add(0, vHeight, 0);
                 Vec3d highTarget = finalPos.add(0, vHeight, 0);
 
-                // 检查水平移动段是否穿过方块
-                if (isPathObstructed(highStart, highTarget)) {
-                    // 尝试调整高度偏移
+                if (isPathObstructed(highStart, highTarget) || isPathObstructed(highTarget, finalPos)) {
                     Vec3d adjustedHighTarget = findSafeHorizontalPath(highStart, finalPos, vHeight);
                     if (adjustedHighTarget == null) {
-                        return; // 放弃目标
+                        return; 
                     }
                     highTarget = adjustedHighTarget;
                 }
 
-                // 重新计算渲染路径
+                // 重新计算渲染路径（包含中间点喵～）
                 renderPathNodes.clear();
-                renderPathNodes.add(startPos);
-                renderPathNodes.add(highStart);
-                renderPathNodes.add(highTarget);
-                renderPathNodes.add(finalPos);
+                buildRenderPath(startPos, highStart);
+                buildRenderPath(highStart, highTarget);
+                buildRenderPath(highTarget, finalPos);
 
-                // 执行传送
                 Vec3d currentServerPos = startPos;
                 expectedPos = currentServerPos;
 
@@ -308,7 +313,6 @@ public class TpAura extends Module {
                 if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
                 mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
-                // 回传
                 if (returnPos.get()) {
                     doPaperTP(currentServerPos, highTarget);
                     currentServerPos = highTarget;
@@ -335,14 +339,15 @@ public class TpAura extends Module {
                     } else {
                         expectedPos = finalPos;
                     }
+                    // 更新客户端本地坐标，防止被本地原生代码拉回喵～
+                    mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
                 }
-                return; // 已处理完毕
+                return; 
             }
 
-            // 无 V-Clip 的正常路径（已经过 path check）
+            // 无 V-Clip 的正常路径处理
             renderPathNodes.clear();
-            renderPathNodes.add(startPos);
-            renderPathNodes.add(finalPos);
+            buildRenderPath(startPos, finalPos);
 
             Vec3d currentServerPos = startPos;
             expectedPos = currentServerPos;
@@ -372,21 +377,24 @@ public class TpAura extends Module {
                 } else {
                     expectedPos = finalPos;
                 }
+                // 更新客户端本地坐标喵～
+                mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
             }
         } else {
-            // Vanilla 模式保持不变
+            // Vanilla 模式
             Vec3d finalPos2 = finalPos;
             double vHeight2 = vClipHeight.get();
             Vec3d highStart2 = startPos.add(0, vHeight2, 0);
             Vec3d highTarget2 = finalPos2.add(0, vHeight2, 0);
 
             renderPathNodes.clear();
-            renderPathNodes.add(startPos);
             if (goUp.get()) {
-                renderPathNodes.add(highStart2);
-                renderPathNodes.add(highTarget2);
+                buildRenderPath(startPos, highStart2);
+                buildRenderPath(highStart2, highTarget2);
+                buildRenderPath(highTarget2, finalPos2);
+            } else {
+                buildRenderPath(startPos, finalPos2);
             }
-            renderPathNodes.add(finalPos2);
 
             int spam = 4;
             for (int i = 0; i < spam; i++) {
@@ -413,11 +421,35 @@ public class TpAura extends Module {
                 Vec3d finalPosClient = offsetFix.get() ? getOffset(finalPos2) : finalPos2;
                 if (offsetFix.get()) sendMove(finalPosClient);
                 expectedPos = finalPosClient;
+                // 更新客户端本地坐标喵～
+                mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
             }
         }
     }
 
-    // 检查路径是否被方块阻挡（考虑玩家碰撞箱）
+    // 构建渲染路径，如果开启中间点渲染会把分段点加进去喵～
+    private void buildRenderPath(Vec3d from, Vec3d to) {
+        if (renderPathNodes.isEmpty()) renderPathNodes.add(from);
+        double maxDist = maxSingleTpDist.get();
+        if (maxDist > 0 && renderIntermediateNodes.get()) {
+            double dist = from.distanceTo(to);
+            if (dist > maxDist) {
+                int segments = (int) Math.ceil(dist / maxDist);
+                Vec3d direction = to.subtract(from).normalize();
+                double segLen = dist / segments;
+                Vec3d current = from;
+                for (int i = 0; i < segments; i++) {
+                    Vec3d next = current.add(direction.multiply(segLen));
+                    if (i == segments - 1) next = to;
+                    renderPathNodes.add(next);
+                    current = next;
+                }
+                return;
+            }
+        }
+        renderPathNodes.add(to);
+    }
+
     private boolean isPathObstructed(Vec3d from, Vec3d to) {
         double dx = to.x - from.x;
         double dy = to.y - from.y;
@@ -425,7 +457,7 @@ public class TpAura extends Module {
         double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
         if (dist < 0.001) return false;
 
-        double step = 0.1; // 采样步长
+        double step = 0.1;
         int steps = (int) Math.ceil(dist / step);
         for (int i = 0; i <= steps; i++) {
             double t = i / (double) steps;
@@ -439,21 +471,21 @@ public class TpAura extends Module {
 
     private boolean isPlayerColliding(Vec3d pos) {
         Box box = mc.player.getBoundingBox().offset(pos.subtract(new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ())));
-        box = box.contract(0.001); // 避免贴墙误判
+        box = box.contract(0.001); 
         for (VoxelShape shape : mc.world.getBlockCollisions(mc.player, box)) {
             return true;
         }
         return false;
     }
 
-    // 在 V-Clip 模式下寻找安全水平路径：尝试 ±1, ±2... 偏移 highTarget 的 Y
+    // 修复后的寻路，同时检查了下降段喵～
     private Vec3d findSafeHorizontalPath(Vec3d highStart, Vec3d finalPos, double vHeight) {
         for (int offset = 0; offset <= 10; offset++) {
             for (int sign : new int[]{1, -1}) {
-                if (offset == 0 && sign == -1) continue; // 0 只检查一次
+                if (offset == 0 && sign == -1) continue; 
                 double yOff = offset * sign;
                 Vec3d candidate = finalPos.add(0, vHeight + yOff, 0);
-                if (!isPathObstructed(highStart, candidate)) {
+                if (!isPathObstructed(highStart, candidate) && !isPathObstructed(candidate, finalPos)) {
                     return candidate;
                 }
             }
@@ -461,7 +493,6 @@ public class TpAura extends Module {
         return null;
     }
 
-    // 分段传送包装
     private void doPaperTP(Vec3d from, Vec3d to) {
         double maxDist = maxSingleTpDist.get();
         if (maxDist <= 0) {
@@ -485,7 +516,6 @@ public class TpAura extends Module {
         }
     }
 
-    // 基础传送（ICTP 防回弹逻辑）
     private void paperTP(Vec3d from, Vec3d to) {
         if (mc.player.isSneaking()) {
             PlayerInput lastInput = mc.player.getLastPlayerInput();
@@ -519,12 +549,23 @@ public class TpAura extends Module {
     private void onPacketReceive(PacketEvent.Receive event) {
         if (mc.player == null || mc.world == null || !antiLag.get() || expectedPos == null) return;
         if (event.packet instanceof PlayerPositionLookS2CPacket packet) {
+            // 距离上次拉回超过1秒，重置重试次数喵～
+            if (System.currentTimeMillis() - lastAntiLagTime > 1000) antiLagRetries = 0;
+            
             Vec3d serverPos = packet.change().position();
             double dist = serverPos.distanceTo(expectedPos);
             if (dist > maxRange.get() || dist < 0.01) return;
-            event.cancel();
-            mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
-            doPaperTP(serverPos, expectedPos);
+            
+            // 限制最多重试 3 次，防止因为无限发包被服务器踢出喵～
+            if (antiLagRetries < 3) {
+                event.cancel();
+                mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
+                doPaperTP(serverPos, expectedPos);
+                antiLagRetries++;
+                lastAntiLagTime = System.currentTimeMillis();
+            } else {
+                expectedPos = null; // 重试失败，乖乖接受拉回喵～
+            }
         }
     }
 
