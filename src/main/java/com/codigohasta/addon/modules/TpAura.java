@@ -3,6 +3,7 @@ package com.codigohasta.addon.modules;
 import com.codigohasta.addon.AddonTemplate;
 import com.codigohasta.addon.mixin.InventoryAccessor;
 import com.codigohasta.addon.utils.leaveshack.InventoryUtil;
+import com.google.common.collect.ImmutableList;
 import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -30,10 +31,12 @@ import net.minecraft.network.packet.s2c.play.PlayerPositionLookS2CPacket;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
 import net.minecraft.util.PlayerInput;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.math.*;
 import net.minecraft.util.shape.VoxelShape;
+import net.minecraft.util.shape.VoxelShapes;
+import net.minecraft.world.World;
+import net.minecraft.world.border.WorldBorder;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -152,8 +155,8 @@ public class TpAura extends Module {
     private int silentSwapPrevSlot = -1;
     private long nextAttackTime = 0;
     private Vec3d expectedPos = null;
-    
-    // 反拉回重试控制喵～
+
+    // 反拉回重试控制
     private int antiLagRetries = 0;
     private long lastAntiLagTime = 0;
 
@@ -264,235 +267,130 @@ public class TpAura extends Module {
         nextAttackTime = System.currentTimeMillis() + attackDelayMs.get();
     }
 
+    // ========== 新的核心攻击逻辑 ==========
     private void executeTrouserAttack(Entity target) {
-        Vec3d startPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
+        Vec3d playerPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         Vec3d targetPos = new Vec3d(target.getX(), target.getY(), target.getZ());
 
-        Vec3d finalPos = !invalid(targetPos) ? targetPos : findNearestPos(targetPos);
+        // 在目标半径6格球体内寻找最靠近玩家的合法站立点
+        Vec3d finalPos = findClosestValidPosInSphere(targetPos, playerPos, 6.0);
         if (finalPos == null) return;
 
         if (mode.get() == Mode.Paper) {
-            if (!goUp.get()) {
-                if (isPathObstructed(startPos, finalPos)) {
-                    return; 
-                }
-            } else {
-                double vHeight = vClipHeight.get();
-                Vec3d highStart = startPos.add(0, vHeight, 0);
-                Vec3d highTarget = finalPos.add(0, vHeight, 0);
+            paperAttack(target, playerPos, finalPos);
+        } else {
+            // Vanilla 模式保持不变，但 finalPos 已用新方法获取
+            vanillaAttack(target, playerPos, finalPos);
+        }
+    }
 
-                if (isPathObstructed(highStart, highTarget) || isPathObstructed(highTarget, finalPos)) {
-                    Vec3d adjustedHighTarget = findSafeHorizontalPath(highStart, finalPos, vHeight);
-                    if (adjustedHighTarget == null) {
-                        return; 
-                    }
-                    highTarget = adjustedHighTarget;
-                }
+    private void paperAttack(Entity target, Vec3d startPos, Vec3d finalPos) {
+        List<Vec3d> path = new ArrayList<>();
+        path.add(startPos);
 
-                // 重新计算渲染路径（包含中间点喵～）
-                renderPathNodes.clear();
-                buildRenderPath(startPos, highStart);
-                buildRenderPath(highStart, highTarget);
-                buildRenderPath(highTarget, finalPos);
+        if (goUp.get()) {
+            double vh = vClipHeight.get();
+            Vec3d highStart = startPos.add(0, vh, 0);
+            Vec3d highTarget = finalPos.add(0, vh, 0);
+            path.add(highStart);
+            path.add(highTarget);
+            path.add(finalPos);
+        } else {
+            path.add(finalPos);
+        }
 
-                Vec3d currentServerPos = startPos;
-                expectedPos = currentServerPos;
-
-                doPaperTP(currentServerPos, highStart);
-                currentServerPos = highStart;
-                expectedPos = currentServerPos;
-
-                doPaperTP(currentServerPos, highTarget);
-                currentServerPos = highTarget;
-                expectedPos = currentServerPos;
-
-                doPaperTP(currentServerPos, finalPos);
-                currentServerPos = finalPos;
-                expectedPos = currentServerPos;
-
-                if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
-                mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
-
-                if (returnPos.get()) {
-                    doPaperTP(currentServerPos, highTarget);
-                    currentServerPos = highTarget;
-                    expectedPos = currentServerPos;
-
-                    doPaperTP(currentServerPos, highStart);
-                    currentServerPos = highStart;
-                    expectedPos = currentServerPos;
-
-                    doPaperTP(currentServerPos, startPos);
-                    currentServerPos = startPos;
-                    expectedPos = currentServerPos;
-
-                    if (offsetFix.get()) {
-                        Vec3d offset = getOffset(startPos);
-                        doPaperTP(currentServerPos, offset);
-                        expectedPos = offset;
-                    }
-                } else {
-                    if (offsetFix.get()) {
-                        Vec3d offset = getOffset(finalPos);
-                        doPaperTP(currentServerPos, offset);
-                        expectedPos = offset;
-                    } else {
-                        expectedPos = finalPos;
-                    }
-                    // 更新客户端本地坐标，防止被本地原生代码拉回喵～
-                    mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
-                }
-                return; 
+        // 返回路径
+        if (returnPos.get()) {
+            if (goUp.get()) {
+                path.add(finalPos.add(0, vClipHeight.get(), 0)); // highTarget
+                path.add(startPos.add(0, vClipHeight.get(), 0)); // highStart
             }
-
-            // 无 V-Clip 的正常路径处理
-            renderPathNodes.clear();
-            buildRenderPath(startPos, finalPos);
-
-            Vec3d currentServerPos = startPos;
-            expectedPos = currentServerPos;
-
-            doPaperTP(currentServerPos, finalPos);
-            currentServerPos = finalPos;
-            expectedPos = currentServerPos;
-
-            if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
-            mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
-
-            if (returnPos.get()) {
-                doPaperTP(currentServerPos, startPos);
-                currentServerPos = startPos;
-                expectedPos = currentServerPos;
-
-                if (offsetFix.get()) {
-                    Vec3d offset = getOffset(startPos);
-                    doPaperTP(currentServerPos, offset);
-                    expectedPos = offset;
-                }
-            } else {
-                if (offsetFix.get()) {
-                    Vec3d offset = getOffset(finalPos);
-                    doPaperTP(currentServerPos, offset);
-                    expectedPos = offset;
-                } else {
-                    expectedPos = finalPos;
-                }
-                // 更新客户端本地坐标喵～
-                mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
+            path.add(startPos);
+            if (offsetFix.get()) {
+                path.add(getOffset(startPos));
             }
         } else {
-            // Vanilla 模式
-            Vec3d finalPos2 = finalPos;
-            double vHeight2 = vClipHeight.get();
-            Vec3d highStart2 = startPos.add(0, vHeight2, 0);
-            Vec3d highTarget2 = finalPos2.add(0, vHeight2, 0);
+            if (offsetFix.get()) {
+                path.add(getOffset(finalPos));
+            }
+        }
 
-            renderPathNodes.clear();
-            if (goUp.get()) {
-                buildRenderPath(startPos, highStart2);
-                buildRenderPath(highStart2, highTarget2);
-                buildRenderPath(highTarget2, finalPos2);
-            } else {
-                buildRenderPath(startPos, finalPos2);
+        // 预检整条路径（使用当前服务端预期位置作为起点）
+        Vec3d serverPos = (expectedPos != null) ? expectedPos : startPos;
+        for (int i = 1; i < path.size(); i++) {
+            if (isWrongMove(serverPos, path.get(i))) {
+                return; // 路径不合法，放弃攻击
             }
+            serverPos = path.get(i);
+        }
 
-            int spam = 4;
-            for (int i = 0; i < spam; i++) {
-                mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, mc.player.horizontalCollision));
-            }
-            if (goUp.get()) {
-                sendMove(highStart2);
-                sendMove(highTarget2);
-            }
-            sendMove(finalPos2);
-            if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
-            mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
+        // 执行传送
+        serverPos = (expectedPos != null) ? expectedPos : startPos;
+        expectedPos = serverPos;
+        renderPathNodes.clear();
+        renderPathNodes.add(serverPos);
 
-            if (returnPos.get()) {
-                if (goUp.get()) {
-                    sendMove(highTarget2);
-                    sendMove(highStart2);
-                }
-                sendMove(startPos);
-                Vec3d finalPosClient = offsetFix.get() ? getOffset(startPos) : startPos;
-                if (offsetFix.get()) sendMove(finalPosClient);
-                expectedPos = finalPosClient;
-            } else {
-                Vec3d finalPosClient = offsetFix.get() ? getOffset(finalPos2) : finalPos2;
-                if (offsetFix.get()) sendMove(finalPosClient);
-                expectedPos = finalPosClient;
-                // 更新客户端本地坐标喵～
-                mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
-            }
+        for (int i = 1; i < path.size(); i++) {
+            Vec3d next = path.get(i);
+            doPaperTP(expectedPos, next);
+            expectedPos = next;
+            renderPathNodes.add(next);
+        }
+
+        // 攻击
+        if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+        mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
+
+        // 如果不回传且最终位置在目标附近，同步客户端位置（按设计要求，仅此处同步）
+        if (!returnPos.get()) {
+            mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
         }
     }
 
-    // 构建渲染路径，如果开启中间点渲染会把分段点加进去喵～
-    private void buildRenderPath(Vec3d from, Vec3d to) {
-        if (renderPathNodes.isEmpty()) renderPathNodes.add(from);
-        double maxDist = maxSingleTpDist.get();
-        if (maxDist > 0 && renderIntermediateNodes.get()) {
-            double dist = from.distanceTo(to);
-            if (dist > maxDist) {
-                int segments = (int) Math.ceil(dist / maxDist);
-                Vec3d direction = to.subtract(from).normalize();
-                double segLen = dist / segments;
-                Vec3d current = from;
-                for (int i = 0; i < segments; i++) {
-                    Vec3d next = current.add(direction.multiply(segLen));
-                    if (i == segments - 1) next = to;
-                    renderPathNodes.add(next);
-                    current = next;
-                }
-                return;
+    private void vanillaAttack(Entity target, Vec3d startPos, Vec3d finalPos) {
+        List<Vec3d> path = new ArrayList<>();
+        if (goUp.get()) {
+            double vh = vClipHeight.get();
+            path.add(startPos.add(0, vh, 0));
+            path.add(finalPos.add(0, vh, 0));
+        }
+        path.add(finalPos);
+
+        // 准备渲染路径
+        renderPathNodes.clear();
+        renderPathNodes.add(startPos);
+        renderPathNodes.addAll(path);
+
+        int spam = 4;
+        for (int i = 0; i < spam; i++) {
+            mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, mc.player.horizontalCollision));
+        }
+
+        for (Vec3d p : path) {
+            sendMove(p);
+        }
+
+        if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+        mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
+
+        if (returnPos.get()) {
+            Collections.reverse(path);
+            for (Vec3d p : path) {
+                sendMove(p);
             }
+            sendMove(startPos);
+            Vec3d finalPosClient = offsetFix.get() ? getOffset(startPos) : startPos;
+            if (offsetFix.get()) sendMove(finalPosClient);
+            expectedPos = finalPosClient;
+        } else {
+            Vec3d finalPosClient = offsetFix.get() ? getOffset(finalPos) : finalPos;
+            if (offsetFix.get()) sendMove(finalPosClient);
+            expectedPos = finalPosClient;
+            mc.player.setPosition(expectedPos.x, expectedPos.y, expectedPos.z);
         }
-        renderPathNodes.add(to);
     }
 
-    private boolean isPathObstructed(Vec3d from, Vec3d to) {
-        double dx = to.x - from.x;
-        double dy = to.y - from.y;
-        double dz = to.z - from.z;
-        double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        if (dist < 0.001) return false;
-
-        double step = 0.1;
-        int steps = (int) Math.ceil(dist / step);
-        for (int i = 0; i <= steps; i++) {
-            double t = i / (double) steps;
-            Vec3d point = from.add(dx * t, dy * t, dz * t);
-            if (isPlayerColliding(point)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean isPlayerColliding(Vec3d pos) {
-        Box box = mc.player.getBoundingBox().offset(pos.subtract(new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ())));
-        box = box.contract(0.001); 
-        for (VoxelShape shape : mc.world.getBlockCollisions(mc.player, box)) {
-            return true;
-        }
-        return false;
-    }
-
-    // 修复后的寻路，同时检查了下降段喵～
-    private Vec3d findSafeHorizontalPath(Vec3d highStart, Vec3d finalPos, double vHeight) {
-        for (int offset = 0; offset <= 10; offset++) {
-            for (int sign : new int[]{1, -1}) {
-                if (offset == 0 && sign == -1) continue; 
-                double yOff = offset * sign;
-                Vec3d candidate = finalPos.add(0, vHeight + yOff, 0);
-                if (!isPathObstructed(highStart, candidate) && !isPathObstructed(candidate, finalPos)) {
-                    return candidate;
-                }
-            }
-        }
-        return null;
-    }
-
+    // ========== 传送方法 ==========
     private void doPaperTP(Vec3d from, Vec3d to) {
         double maxDist = maxSingleTpDist.get();
         if (maxDist <= 0) {
@@ -545,50 +443,188 @@ public class TpAura extends Module {
         mc.player.networkHandler.sendPacket(packet);
     }
 
-    @EventHandler
-    private void onPacketReceive(PacketEvent.Receive event) {
-        if (mc.player == null || mc.world == null || !antiLag.get() || expectedPos == null) return;
-        if (event.packet instanceof PlayerPositionLookS2CPacket packet) {
-            // 距离上次拉回超过1秒，重置重试次数喵～
-            if (System.currentTimeMillis() - lastAntiLagTime > 1000) antiLagRetries = 0;
-            
-            Vec3d serverPos = packet.change().position();
-            double dist = serverPos.distanceTo(expectedPos);
-            if (dist > maxRange.get() || dist < 0.01) return;
-            
-            // 限制最多重试 3 次，防止因为无限发包被服务器踢出喵～
-            if (antiLagRetries < 3) {
-                event.cancel();
-                mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
-                doPaperTP(serverPos, expectedPos);
-                antiLagRetries++;
-                lastAntiLagTime = System.currentTimeMillis();
-            } else {
-                expectedPos = null; // 重试失败，乖乖接受拉回喵～
+    // ========== 服务器模拟 ==========
+    private static final double MOVED_WRONGLY_THRESHOLD = 0.0625D;
+
+    private boolean isWrongMove(Vec3d startPos, Vec3d endPos) {
+        return getSquaredMovementDelta(startPos, endPos) > MOVED_WRONGLY_THRESHOLD;
+    }
+
+    private double getSquaredMovementDelta(Vec3d startPos, Vec3d endPos) {
+        double d0 = clampHorizontal(endPos.getX());
+        double d1 = clampVertical(endPos.getY());
+        double d2 = clampHorizontal(endPos.getZ());
+
+        double d6 = d0 - startPos.getX();
+        double d7 = d1 - startPos.getY();
+        double d8 = d2 - startPos.getZ();
+
+        Vec3d movedPos = move(startPos, new Vec3d(d6, d7, d8));
+
+        d6 = d0 - movedPos.x;
+        d7 = d1 - movedPos.y;
+        d8 = d2 - movedPos.z;
+
+        if (d7 > -0.5D || d7 < 0.5D) {
+            d7 = 0.0D;
+        }
+        return d6 * d6 + d7 * d7 + d8 * d8;
+    }
+
+    private Vec3d move(Vec3d startPos, Vec3d movement) {
+        Vec3d vec3d = adjustMovementForCollisions(startPos, movement);
+        if (vec3d.lengthSquared() > 1.0E-7) {
+            return startPos.add(vec3d);
+        }
+        return startPos;
+    }
+
+    private Vec3d adjustMovementForCollisions(Vec3d startPos, Vec3d movement) {
+        Box box = mc.player.getBoundingBox().offset(startPos.subtract(mc.player.getEntityPos()));
+        final float stepHeight = 1;
+        List<VoxelShape> list = mc.world.getEntityCollisions(mc.player, box.stretch(movement));
+        Vec3d vec3d = movement.lengthSquared() == 0.0 ? movement : adjustMovementForCollisions(mc.player, movement, box, mc.world, list);
+
+        boolean bl = movement.x != vec3d.x;
+        boolean bl2 = movement.y != vec3d.y;
+        boolean bl3 = movement.z != vec3d.z;
+        boolean bl4 = mc.player.isOnGround() || bl2 && movement.y < 0.0;
+        if (bl4 && (bl || bl3)) {
+            Vec3d vec3d2 = adjustMovementForCollisions(mc.player, new Vec3d(movement.x, stepHeight, movement.z), box, mc.world, list);
+            Vec3d vec3d3 = adjustMovementForCollisions(
+                mc.player, new Vec3d(0.0, stepHeight, 0.0), box.stretch(movement.x, 0.0, movement.z), mc.world, list
+            );
+            if (vec3d3.y < (double)stepHeight) {
+                Vec3d vec3d4 = adjustMovementForCollisions(mc.player, new Vec3d(movement.x, 0.0, movement.z), box.offset(vec3d3), mc.world, list).add(vec3d3);
+                if (vec3d4.horizontalLengthSquared() > vec3d2.horizontalLengthSquared()) {
+                    vec3d2 = vec3d4;
+                }
             }
+
+            if (vec3d2.horizontalLengthSquared() > vec3d.horizontalLengthSquared()) {
+                return vec3d2.add(adjustMovementForCollisions(mc.player, new Vec3d(0.0, -vec3d2.y + movement.y, 0.0), box.offset(vec3d2), mc.world, list));
+            }
+        }
+
+        return vec3d;
+    }
+
+    private Vec3d adjustMovementForCollisions(@Nullable Entity entity, Vec3d movement, Box entityBoundingBox, World world, List<VoxelShape> collisions) {
+        ImmutableList.Builder<VoxelShape> builder = ImmutableList.builderWithExpectedSize(collisions.size() + 1);
+        if (!collisions.isEmpty()) {
+            builder.addAll(collisions);
+        }
+
+        WorldBorder worldBorder = world.getWorldBorder();
+        boolean bl = entity != null && worldBorder.canCollide(entity, entityBoundingBox.stretch(movement));
+        if (bl) {
+            builder.add(worldBorder.asVoxelShape());
+        }
+
+        builder.addAll(world.getBlockCollisions(entity, entityBoundingBox.stretch(movement)));
+        return adjustMovementForCollisions(movement, entityBoundingBox, builder.build());
+    }
+
+    private Vec3d adjustMovementForCollisions(Vec3d movement, Box entityBoundingBox, List<VoxelShape> collisions) {
+        if (collisions.isEmpty()) {
+            return movement;
+        } else {
+            double d = movement.x;
+            double e = movement.y;
+            double f = movement.z;
+            if (e != 0.0) {
+                e = VoxelShapes.calculateMaxOffset(Direction.Axis.Y, entityBoundingBox, collisions, e);
+                if (e != 0.0) {
+                    entityBoundingBox = entityBoundingBox.offset(0.0, e, 0.0);
+                }
+            }
+
+            boolean bl = Math.abs(d) < Math.abs(f);
+            if (bl && f != 0.0) {
+                f = VoxelShapes.calculateMaxOffset(Direction.Axis.Z, entityBoundingBox, collisions, f);
+                if (f != 0.0) {
+                    entityBoundingBox = entityBoundingBox.offset(0.0, 0.0, f);
+                }
+            }
+
+            if (d != 0.0) {
+                d = VoxelShapes.calculateMaxOffset(Direction.Axis.X, entityBoundingBox, collisions, d);
+                if (!bl && d != 0.0) {
+                    entityBoundingBox = entityBoundingBox.offset(d, 0.0, 0.0);
+                }
+            }
+
+            if (!bl && f != 0.0) {
+                f = VoxelShapes.calculateMaxOffset(Direction.Axis.Z, entityBoundingBox, collisions, f);
+            }
+
+            return new Vec3d(d, e, f);
         }
     }
 
-    @EventHandler
-    private void onRender(Render3DEvent event) {
-        if (currentTarget != null) {
-            event.renderer.box(currentTarget.getBoundingBox(), targetColor.get(), targetColor.get(), ShapeMode.Lines, 0);
-        }
-        if (renderPath.get() && !renderPathNodes.isEmpty()) {
-            for (int i = 0; i < renderPathNodes.size() - 1; i++) {
-                Vec3d n1 = renderPathNodes.get(i);
-                Vec3d n2 = renderPathNodes.get(i+1);
-                event.renderer.line(n1.x, n1.y + 1, n1.z, n2.x, n2.y + 1, n2.z, pathColor.get());
-                event.renderer.box(new Box(n1.x - 0.2, n1.y, n1.z - 0.2, n1.x + 0.2, n1.y + 2, n1.z + 0.2), pathColor.get(), pathColor.get(), ShapeMode.Lines, 0);
-            }
-        }
+    private static double clampHorizontal(double d) {
+        return MathHelper.clamp(d, -3.0E7D, 3.0E7D);
     }
 
+    private static double clampVertical(double d) {
+        return MathHelper.clamp(d, -2.0E7D, 2.0E7D);
+    }
+
+    // ========== 合法性检查 ==========
+    private boolean isObstructed(Vec3d pos) {
+        Box box = mc.player.getBoundingBox().offset(pos.subtract(mc.player.getEntityPos()));
+        box = box.expand(-0.0001, -0.0001, -0.0001);
+        for (VoxelShape v : mc.world.getBlockCollisions(mc.player, box)) {
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isPositionValid(Vec3d pos, Vec3d from) {
+        // 距离不能超过100（近似平方距离），且不卡方块，且不会触发错误移动
+        return from.squaredDistanceTo(pos) < 100.0000000000001 && !isObstructed(pos) && !isWrongMove(from, pos);
+    }
+
+    // ========== 目标点搜索 ==========
+    private Vec3d findClosestValidPosInSphere(Vec3d targetPos, Vec3d playerPos, double radius) {
+        BlockPos center = BlockPos.ofFloored(targetPos.x, targetPos.y, targetPos.z);
+        int r = (int) Math.ceil(radius);
+        Vec3d best = null;
+        double bestDistSq = Double.MAX_VALUE;
+
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dy = -r; dy <= r; dy++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    BlockPos bp = center.add(dx, dy, dz);
+                    Vec3d stand = Vec3d.ofBottomCenter(bp).add(0, 1, 0);
+                    if (stand.distanceTo(targetPos) > radius) continue;
+
+                    if (isPositionValid(stand, playerPos)) {
+                        double distSq = playerPos.squaredDistanceTo(stand);
+                        if (distSq < bestDistSq) {
+                            bestDistSq = distSq;
+                            best = stand;
+                        }
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    // ========== 辅助方法 ==========
     private Vec3d getOffset(Vec3d base) {
         double dx = 0.05, dy = 0.01;
-        List<Vec3d> offsets = Arrays.asList(base.add(dx, dy, 0), base.add(-dx, dy, 0), base.add(0, dy, dx), base.add(0, dy, -dx));
+        List<Vec3d> offsets = Arrays.asList(
+            base.add(dx, dy, 0),
+            base.add(-dx, dy, 0),
+            base.add(0, dy, dx),
+            base.add(0, dy, -dx)
+        );
         Collections.shuffle(offsets);
-        for (Vec3d pos : offsets) if (!invalid(pos)) return pos;
+        for (Vec3d pos : offsets) {
+            if (!invalid(pos)) return pos;
+        }
         return base.add(0, dy, 0);
     }
 
@@ -602,18 +638,6 @@ public class TpAura extends Module {
             if (!state.getCollisionShape(mc.world, bPos).isEmpty() || state.isOf(Blocks.LAVA)) return true;
         }
         return false;
-    }
-
-    private Vec3d findNearestPos(Vec3d desired) {
-        for (int dy = 0; dy <= 2; dy++) {
-            for (int dx = -1; dx <= 1; dx++) {
-                for (int dz = -1; dz <= 1; dz++) {
-                    Vec3d test = desired.add(dx, dy, dz);
-                    if (!invalid(test)) return test;
-                }
-            }
-        }
-        return null;
     }
 
     private boolean entityCheck(Entity entity) {
@@ -639,6 +663,43 @@ public class TpAura extends Module {
             if (listMode.get() == ListMode.Blacklist && list.contains(name)) return false;
         }
         return true;
+    }
+
+    @EventHandler
+    private void onPacketReceive(PacketEvent.Receive event) {
+        if (mc.player == null || mc.world == null || !antiLag.get() || expectedPos == null) return;
+        if (event.packet instanceof PlayerPositionLookS2CPacket packet) {
+            if (System.currentTimeMillis() - lastAntiLagTime > 1000) antiLagRetries = 0;
+
+            Vec3d serverPos = packet.change().position();
+            double dist = serverPos.distanceTo(expectedPos);
+            if (dist > maxRange.get() || dist < 0.01) return;
+
+            if (antiLagRetries < 3) {
+                event.cancel();
+                mc.getNetworkHandler().sendPacket(new TeleportConfirmC2SPacket(packet.teleportId()));
+                doPaperTP(serverPos, expectedPos);
+                antiLagRetries++;
+                lastAntiLagTime = System.currentTimeMillis();
+            } else {
+                expectedPos = null;
+            }
+        }
+    }
+
+    @EventHandler
+    private void onRender(Render3DEvent event) {
+        if (currentTarget != null) {
+            event.renderer.box(currentTarget.getBoundingBox(), targetColor.get(), targetColor.get(), ShapeMode.Lines, 0);
+        }
+        if (renderPath.get() && !renderPathNodes.isEmpty()) {
+            for (int i = 0; i < renderPathNodes.size() - 1; i++) {
+                Vec3d n1 = renderPathNodes.get(i);
+                Vec3d n2 = renderPathNodes.get(i + 1);
+                event.renderer.line(n1.x, n1.y + 1, n1.z, n2.x, n2.y + 1, n2.z, pathColor.get());
+                event.renderer.box(new Box(n1.x - 0.2, n1.y, n1.z - 0.2, n1.x + 0.2, n1.y + 2, n1.z + 0.2), pathColor.get(), pathColor.get(), ShapeMode.Lines, 0);
+            }
+        }
     }
 
     @Override
