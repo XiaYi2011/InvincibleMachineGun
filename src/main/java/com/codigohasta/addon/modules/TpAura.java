@@ -46,13 +46,22 @@ public class TpAura extends Module {
     private final SettingGroup sgWhitelist = settings.createGroup("白名单");
     private final SettingGroup sgRender = settings.createGroup("渲染");
 
-    // 额外延迟（毫秒）
+    // 额外延迟（毫秒） - 现在真正支持毫秒级
     private final Setting<Integer> attackDelayMs = sgTiming.add(new IntSetting.Builder()
         .name("额外延迟(ms)")
         .description("每次攻击后的冷却时间，单位毫秒")
         .defaultValue(0)
         .min(0)
         .sliderMax(5000)
+        .build());
+
+    // 最大攻击频率限制（防止发包过快）
+    private final Setting<Integer> maxAttacksPerFrame = sgTiming.add(new IntSetting.Builder()
+        .name("每帧最大攻击次数")
+        .description("单帧内最多连续攻击的次数（防止在极高 FPS 下发包过密）")
+        .defaultValue(1)
+        .min(1)
+        .sliderMax(20)
         .build());
 
     // --- 2. General Settings ---
@@ -141,7 +150,7 @@ public class TpAura extends Module {
     private int originalSlot = -1;
     private int silentSwapSlot = -1;
     private int silentSwapPrevSlot = -1;
-    private long nextAttackTime = 0;
+    private long nextAttackTime = System.nanoTime();
 
     public TpAura() {
         super(AddonTemplate.CATEGORY, "如来神掌", "从天而降的掌法。抄袭了裤子条纹的tp。娱乐功能");
@@ -152,7 +161,7 @@ public class TpAura extends Module {
         originalSlot = -1;
         silentSwapSlot = -1;
         silentSwapPrevSlot = -1;
-        nextAttackTime = System.currentTimeMillis();
+        nextAttackTime = System.nanoTime();
         renderPathNodes.clear();
     }
 
@@ -222,31 +231,49 @@ public class TpAura extends Module {
         silentSwapPrevSlot = -1;
     }
 
+    /**
+     * 使用 RenderEvent.Pre 替代 TickEvent，获取更高的检查频率（每帧触发）。
+     * 利用 System.nanoTime() 精确控制延迟。
+     */
     @EventHandler
-    private void onTick(TickEvent.Pre event) {
+    private void onRenderPre(Render3DEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
-        if (System.currentTimeMillis() < nextAttackTime) {
-            swapBackWeapon();
-            return;
-        }
 
         if (autoSwitch.get()) {
             if (!checkAndSwapWeapon()) return;
         }
 
-        targets.clear();
-        TargetUtils.getList(targets, this::entityCheck, SortPriority.LowestDistance, 1);
-        if (targets.isEmpty()) {
-            currentTarget = null;
-            swapBackWeapon();
-            return;
+        int attacksThisFrame = 0;
+        long now = System.nanoTime();
+        long delayNs = attackDelayMs.get() * 1_000_000L;
+
+        while (now >= nextAttackTime && attacksThisFrame < maxAttacksPerFrame.get()) {
+            targets.clear();
+            TargetUtils.getList(targets, this::entityCheck, SortPriority.LowestDistance, 1);
+            if (targets.isEmpty()) break;
+
+            currentTarget = targets.get(0);
+            executeTrouserAttack(currentTarget);
+            attacksThisFrame++;
+
+            // 累加 nextAttackTime，避免 drift
+            if (delayNs > 0) {
+                nextAttackTime += delayNs;
+                if (now >= nextAttackTime) nextAttackTime = now + delayNs; // 防止堆积
+            } else {
+                // 延迟为 0 时至少确保一次攻击，然后跳到当前时间
+                nextAttackTime = now;
+                break;
+            }
         }
-        currentTarget = targets.get(0);
 
-        executeTrouserAttack(currentTarget);
-        swapBackWeapon();
-
-        nextAttackTime = System.currentTimeMillis() + attackDelayMs.get();
+        // 如果没有进行攻击，释放武器切换
+        if (attacksThisFrame == 0) {
+            swapBackWeapon();
+        } else {
+            // 攻击后统一释放
+            swapBackWeapon();
+        }
     }
 
     private void executeTrouserAttack(Entity target) {
@@ -271,7 +298,6 @@ public class TpAura extends Module {
         if (mode.get() == Mode.Paper) {
             Vec3d currentServerPos = startPos;
 
-            // 攻击前进
             if (goUp.get()) {
                 paperTP(currentServerPos, highStart);
                 currentServerPos = highStart;
@@ -294,12 +320,10 @@ public class TpAura extends Module {
                 }
                 paperTP(currentServerPos, startPos);
             } else if (returnMode.get() == ReturnMode.ToHighTarget) {
-                // 传送到目标正上方（highTarget）
                 paperTP(currentServerPos, highTarget);
             }
-            // 回传时不更新客户端位置，确保无移动卡顿
         } else {
-            // Vanilla 模式（保留原逻辑）
+            // Vanilla 模式
             int spam = 4;
             for (int i = 0; i < spam; i++) {
                 mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, mc.player.horizontalCollision));
@@ -321,7 +345,6 @@ public class TpAura extends Module {
             } else if (returnMode.get() == ReturnMode.ToHighTarget) {
                 sendMove(highTarget);
             }
-            // Vanilla 模式的偏移同步保留
             if (offsetFix.get()) {
                 Vec3d offset = getOffset(finalPos);
                 sendMove(offset);
@@ -332,9 +355,6 @@ public class TpAura extends Module {
         }
     }
 
-    /**
-     * Paper模式传送，完全复刻旧版 ICTP 的防回弹逻辑。
-     */
     private void paperTP(Vec3d from, Vec3d to) {
         if (mc.player.isSneaking()) {
             PlayerInput lastInput = mc.player.getLastPlayerInput();
