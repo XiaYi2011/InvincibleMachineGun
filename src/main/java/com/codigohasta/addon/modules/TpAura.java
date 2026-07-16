@@ -252,8 +252,8 @@ public class TpAura extends Module {
     }
 
     private void executeTrouserAttack(Entity target) {
-        Vec3d startPos = mc.player.getPos();
-        Vec3d targetPos = target.getPos();
+        Vec3d startPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
+        Vec3d targetPos = new Vec3d(target.getX(), target.getY(), target.getZ());
         double reach = maxRange.get();
 
         Vec3d finalPos = !invalid(targetPos) ? targetPos : findNearestPos(targetPos);
@@ -441,7 +441,7 @@ public class TpAura extends Module {
         if (mc.world == null) return true;
         BlockPos bp = BlockPos.ofFloored(pos.x, pos.y, pos.z);
         if (mc.world.getChunk(bp.getX() >> 4, bp.getZ() >> 4) == null) return true;
-        Box box = mc.player.getBoundingBox().offset(pos.subtract(mc.player.getPos()));
+        Box box = mc.player.getBoundingBox().offset(pos.subtract(new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ())));
         for (BlockPos bPos : BlockPos.iterate(BlockPos.ofFloored(box.minX, box.minY, box.minZ), BlockPos.ofFloored(box.maxX, box.maxY, box.maxZ))) {
             BlockState state = mc.world.getBlockState(bPos);
             if (!state.getCollisionShape(mc.world, bPos).isEmpty() || state.isOf(Blocks.LAVA)) return true;
