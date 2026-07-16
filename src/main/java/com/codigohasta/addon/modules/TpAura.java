@@ -74,10 +74,18 @@ public class TpAura extends Module {
         .name("最大范围").defaultValue(49.0).min(1).sliderMax(99).build());
     private final Setting<Boolean> goUp = sgTP.add(new BoolSetting.Builder()
         .name("V-Clip").defaultValue(true).visible(() -> mode.get() == Mode.Paper).build());
-    private final Setting<Integer> paperPackets = sgTP.add(new IntSetting.Builder()
-        .name("垫包数量").defaultValue(8).min(1).sliderMax(20).build());
-    private final Setting<Boolean> returnPos = sgTP.add(new BoolSetting.Builder()
-        .name("攻击后回传").defaultValue(true).build());
+
+    public enum ReturnMode { Full("完整回传"), ToHighTarget("传送到目标上方");
+        private final String title;
+        ReturnMode(String title) { this.title = title; }
+        @Override public String toString() { return title; }
+    }
+    private final Setting<ReturnMode> returnMode = sgTP.add(new EnumSetting.Builder<ReturnMode>()
+        .name("回传模式")
+        .description("攻击后的回传方式")
+        .defaultValue(ReturnMode.Full)
+        .build());
+
     private final Setting<Boolean> offsetFix = sgTP.add(new BoolSetting.Builder()
         .name("偏移同步").description("发送微小偏移包防止拉回，但可能导致卡住").defaultValue(true).build());
 
@@ -126,16 +134,6 @@ public class TpAura extends Module {
         .name("轨迹颜色").defaultValue(new SettingColor(255, 0, 0, 100)).build());
     private final Setting<SettingColor> targetColor = sgRender.add(new ColorSetting.Builder()
         .name("目标颜色").defaultValue(new SettingColor(255, 0, 0, 200)).build());
-
-    private final SettingGroup sgTotem = settings.createGroup("图腾绕过");
-    private final Setting<Boolean> totemBypass = sgTotem.add(new BoolSetting.Builder()
-        .name("图腾绕过").description("连续多次攻击以突破图腾无敌帧，仅Paper模式有效").defaultValue(false).build());
-    private final Setting<Integer> totemAttacks = sgTotem.add(new IntSetting.Builder()
-        .name("攻击次数").description("连续攻击次数(1-3)").defaultValue(2).min(1).max(3).sliderRange(1, 3)
-        .visible(() -> totemBypass.get()).build());
-    private final Setting<Integer> totemHeightIncrease = sgTotem.add(new IntSetting.Builder()
-        .name("递增高度").description("每次额外攻击增加的下落高度").defaultValue(9).min(1).sliderRange(1, 100)
-        .visible(() -> totemBypass.get()).build());
 
     private final List<Entity> targets = new ArrayList<>();
     private final List<Vec3d> renderPathNodes = new ArrayList<>();
@@ -273,77 +271,35 @@ public class TpAura extends Module {
         if (mode.get() == Mode.Paper) {
             Vec3d currentServerPos = startPos;
 
-            if (totemBypass.get()) {
-                int attackCount = totemAttacks.get();
-                int currentHeight = (int) reach;
-
-                for (int i = 0; i < attackCount; i++) {
-                    int blocks = (i == 0) ? (int) reach : currentHeight;
-                    if (mc.world != null) {
-                        int worldTop = mc.world.getTopYInclusive() - 1;
-                        if (finalPos.y + blocks > worldTop) {
-                            blocks = (int) (worldTop - finalPos.y);
-                            if (blocks < 1) break;
-                        }
-                    }
-
-                    Vec3d progressiveAbove = finalPos.add(0, blocks, 0);
-                    if (goUp.get()) {
-                        paperTP(currentServerPos, progressiveAbove);
-                        currentServerPos = progressiveAbove;
-                    }
-                    paperTP(currentServerPos, finalPos);
-                    currentServerPos = finalPos;
-
-                    if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
-                    mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
-
-                    currentHeight += totemHeightIncrease.get();
-                }
-            } else {
-                if (goUp.get()) {
-                    paperTP(currentServerPos, highStart);
-                    currentServerPos = highStart;
-                    paperTP(currentServerPos, highTarget);
-                    currentServerPos = highTarget;
-                }
-                paperTP(currentServerPos, finalPos);
-                currentServerPos = finalPos;
-
-                if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
-                mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
+            // 攻击前进
+            if (goUp.get()) {
+                paperTP(currentServerPos, highStart);
+                currentServerPos = highStart;
+                paperTP(currentServerPos, highTarget);
+                currentServerPos = highTarget;
             }
+            paperTP(currentServerPos, finalPos);
+            currentServerPos = finalPos;
 
-            if (returnPos.get()) {
-                if (goUp.get() && !totemBypass.get()) {
+            if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+            mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
+
+            // 回传
+            if (returnMode.get() == ReturnMode.Full) {
+                if (goUp.get()) {
                     paperTP(currentServerPos, highTarget);
                     currentServerPos = highTarget;
                     paperTP(currentServerPos, highStart);
                     currentServerPos = highStart;
                 }
                 paperTP(currentServerPos, startPos);
-                currentServerPos = startPos;
-
-                if (offsetFix.get()) {
-                    Vec3d offset = getOffset(startPos);
-                    paperTP(currentServerPos, offset);
-                    mc.player.updatePosition(offset.x, offset.y, offset.z);
-                } else {
-                    mc.player.updatePosition(startPos.x, startPos.y, startPos.z);
-                }
-                mc.player.setVelocity(0, 0, 0);
-            } else {
-                if (offsetFix.get()) {
-                    Vec3d offset = getOffset(finalPos);
-                    paperTP(currentServerPos, offset);
-                    mc.player.updatePosition(offset.x, offset.y, offset.z);
-                } else {
-                    mc.player.updatePosition(finalPos.x, finalPos.y, finalPos.z);
-                }
-                mc.player.setVelocity(0, 0, 0);
+            } else if (returnMode.get() == ReturnMode.ToHighTarget) {
+                // 传送到目标正上方（highTarget）
+                paperTP(currentServerPos, highTarget);
             }
+            // 回传时不更新客户端位置，确保无移动卡顿
         } else {
-            // Vanilla mode
+            // Vanilla 模式（保留原逻辑）
             int spam = 4;
             for (int i = 0; i < spam; i++) {
                 mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(false, mc.player.horizontalCollision));
@@ -356,27 +312,22 @@ public class TpAura extends Module {
             if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
             mc.player.networkHandler.sendPacket(PlayerInteractEntityC2SPacket.attack(target, mc.player.isSneaking()));
 
-            if (returnPos.get()) {
+            if (returnMode.get() == ReturnMode.Full) {
                 if (goUp.get()) {
                     sendMove(highTarget);
                     sendMove(highStart);
                 }
                 sendMove(startPos);
-                if (offsetFix.get()) {
-                    Vec3d offset = getOffset(startPos);
-                    sendMove(offset);
-                    mc.player.updatePosition(offset.x, offset.y, offset.z);
-                } else {
-                    mc.player.updatePosition(startPos.x, startPos.y, startPos.z);
-                }
+            } else if (returnMode.get() == ReturnMode.ToHighTarget) {
+                sendMove(highTarget);
+            }
+            // Vanilla 模式的偏移同步保留
+            if (offsetFix.get()) {
+                Vec3d offset = getOffset(finalPos);
+                sendMove(offset);
+                mc.player.updatePosition(offset.x, offset.y, offset.z);
             } else {
-                if (offsetFix.get()) {
-                    Vec3d offset = getOffset(finalPos);
-                    sendMove(offset);
-                    mc.player.updatePosition(offset.x, offset.y, offset.z);
-                } else {
-                    mc.player.updatePosition(finalPos.x, finalPos.y, finalPos.z);
-                }
+                mc.player.updatePosition(finalPos.x, finalPos.y, finalPos.z);
             }
         }
     }
@@ -466,7 +417,6 @@ public class TpAura extends Module {
         if (!entities.get().contains(entity.getType())) return false;
         if (mc.player.distanceTo(entity) > maxRange.get()) return false;
 
-        // Y轴过滤
         if (enableYFilter.get()) {
             double y = entity.getY();
             if (y < minY.get() || y > maxY.get()) return false;
@@ -486,7 +436,6 @@ public class TpAura extends Module {
             if (listMode.get() == ListMode.Whitelist && !list.contains(name)) return false;
             if (listMode.get() == ListMode.Blacklist && list.contains(name)) return false;
         }
-
         return true;
     }
 
