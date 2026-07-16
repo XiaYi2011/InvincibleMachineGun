@@ -25,10 +25,12 @@ import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.passive.TameableEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.network.packet.c2s.play.CloseHandledScreenC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerInputC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerInteractEntityC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
+import net.minecraft.util.PlayerInput;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
@@ -250,8 +252,8 @@ public class TpAura extends Module {
     }
 
     private void executeTrouserAttack(Entity target) {
-        Vec3d startPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
-        Vec3d targetPos = new Vec3d(target.getX(), target.getY(), target.getZ());
+        Vec3d startPos = mc.player.getPos();
+        Vec3d targetPos = target.getPos();
         double reach = maxRange.get();
 
         Vec3d finalPos = !invalid(targetPos) ? targetPos : findNearestPos(targetPos);
@@ -325,18 +327,18 @@ public class TpAura extends Module {
                 if (offsetFix.get()) {
                     Vec3d offset = getOffset(startPos);
                     paperTP(currentServerPos, offset);
-                    mc.player.setPosition(offset.x, offset.y, offset.z);
+                    mc.player.updatePosition(offset.x, offset.y, offset.z);
                 } else {
-                    mc.player.setPosition(startPos.x, startPos.y, startPos.z);
+                    mc.player.updatePosition(startPos.x, startPos.y, startPos.z);
                 }
                 mc.player.setVelocity(0, 0, 0);
             } else {
                 if (offsetFix.get()) {
                     Vec3d offset = getOffset(finalPos);
                     paperTP(currentServerPos, offset);
-                    mc.player.setPosition(offset.x, offset.y, offset.z);
+                    mc.player.updatePosition(offset.x, offset.y, offset.z);
                 } else {
-                    mc.player.setPosition(finalPos.x, finalPos.y, finalPos.z);
+                    mc.player.updatePosition(finalPos.x, finalPos.y, finalPos.z);
                 }
                 mc.player.setVelocity(0, 0, 0);
             }
@@ -363,33 +365,47 @@ public class TpAura extends Module {
                 if (offsetFix.get()) {
                     Vec3d offset = getOffset(startPos);
                     sendMove(offset);
-                    mc.player.setPosition(offset.x, offset.y, offset.z);
+                    mc.player.updatePosition(offset.x, offset.y, offset.z);
                 } else {
-                    mc.player.setPosition(startPos.x, startPos.y, startPos.z);
+                    mc.player.updatePosition(startPos.x, startPos.y, startPos.z);
                 }
             } else {
                 if (offsetFix.get()) {
                     Vec3d offset = getOffset(finalPos);
                     sendMove(offset);
-                    mc.player.setPosition(offset.x, offset.y, offset.z);
+                    mc.player.updatePosition(offset.x, offset.y, offset.z);
                 } else {
-                    mc.player.setPosition(finalPos.x, finalPos.y, finalPos.z);
+                    mc.player.updatePosition(finalPos.x, finalPos.y, finalPos.z);
                 }
             }
         }
     }
 
     /**
-     * Paper模式的传送逻辑，使用原版PlayerMoveC2SPacket，但具有与ICTP相同的防回弹效果。
-     * 省略潜行修正以避免Input类在不同映射下的兼容性问题。
+     * Paper模式传送，完全复刻旧版 ICTP 的防回弹逻辑。
      */
     private void paperTP(Vec3d from, Vec3d to) {
+        if (mc.player.isSneaking()) {
+            PlayerInput lastInput = mc.player.getLastPlayerInput();
+            PlayerInput input = new PlayerInput(
+                lastInput.forward(),
+                lastInput.backward(),
+                lastInput.left(),
+                lastInput.right(),
+                lastInput.jump(),
+                false,
+                lastInput.sprint()
+            );
+            mc.player.networkHandler.sendPacket(new PlayerInputC2SPacket(input));
+        }
+
         double distance = from.distanceTo(to);
         int packetsRequired = (int) Math.ceil(Math.abs(distance / 10));
-        for (int packetNumber = 0; packetNumber < (packetsRequired - 1); packetNumber++) {
-            mc.player.connection.send(new PlayerMoveC2SPacket.OnGroundOnly(true, mc.player.horizontalCollision));
+        for (int i = 0; i < packetsRequired - 1; i++) {
+            mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.OnGroundOnly(true, mc.player.horizontalCollision));
         }
-        mc.player.connection.send(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
+
+        mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.PositionAndOnGround(to.x, to.y, to.z, true, mc.player.horizontalCollision));
     }
 
     private void sendMove(Vec3d pos) {
@@ -425,7 +441,7 @@ public class TpAura extends Module {
         if (mc.world == null) return true;
         BlockPos bp = BlockPos.ofFloored(pos.x, pos.y, pos.z);
         if (mc.world.getChunk(bp.getX() >> 4, bp.getZ() >> 4) == null) return true;
-        Box box = mc.player.getBoundingBox().offset(pos.subtract(new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ())));
+        Box box = mc.player.getBoundingBox().offset(pos.subtract(mc.player.getPos()));
         for (BlockPos bPos : BlockPos.iterate(BlockPos.ofFloored(box.minX, box.minY, box.minZ), BlockPos.ofFloored(box.maxX, box.maxY, box.maxZ))) {
             BlockState state = mc.world.getBlockState(bPos);
             if (!state.getCollisionShape(mc.world, bPos).isEmpty() || state.isOf(Blocks.LAVA)) return true;
