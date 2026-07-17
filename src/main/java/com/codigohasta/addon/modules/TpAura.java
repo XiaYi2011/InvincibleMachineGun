@@ -59,19 +59,19 @@ public class TpAura extends Module {
         .defaultValue(50).min(0).sliderMax(5000).build());
 
     private final Setting<Boolean> autoSwitch = sgGeneral.add(new BoolSetting.Builder()
-        .name("自动切武器").defaultValue(true).build());
+        .name("自动切武器").defaultValue(false).build());
     private final Setting<Boolean> requireMace = sgGeneral.add(new BoolSetting.Builder()
         .name("仅手持重锤").defaultValue(false).build());
     private final Setting<Boolean> swingHand = sgGeneral.add(new BoolSetting.Builder()
         .name("挥手").defaultValue(true).build());
     private final Setting<Boolean> silentSwap = sgGeneral.add(new BoolSetting.Builder()
-        .name("静默切换").defaultValue(true).visible(autoSwitch::get).build());
+        .name("静默切换").defaultValue(false).visible(autoSwitch::get).build());
 
     public enum Mode { Vanilla, Paper }
     private final Setting<Mode> mode = sgTP.add(new EnumSetting.Builder<Mode>()
         .name("兼容模式").defaultValue(Mode.Paper).build());
     private final Setting<Double> maxRange = sgTP.add(new DoubleSetting.Builder()
-        .name("最大攻击范围").defaultValue(49.0).min(1).sliderMax(99).build());
+        .name("最大攻击范围").defaultValue(100).min(1).max(200).build());
     private final Setting<Boolean> goUp = sgTP.add(new BoolSetting.Builder()
         .name("V-Clip").defaultValue(true).build());
     private final Setting<Boolean> smartVClip = sgTP.add(new BoolSetting.Builder()
@@ -81,23 +81,23 @@ public class TpAura extends Module {
         .visible(goUp::get)
         .build());
     private final Setting<Double> vClipHeight = sgTP.add(new DoubleSetting.Builder()
-        .name("V-Clip 高度").defaultValue(22.0).min(1).sliderMax(100).visible(goUp::get).build());
+        .name("V-Clip 高度").defaultValue(22.0).sliderMin(1).sliderMax(64).visible(goUp::get).build());
     private final Setting<Boolean> returnPos = sgTP.add(new BoolSetting.Builder()
         .name("攻击后回传").defaultValue(true).build());
     private final Setting<Boolean> noThroughWalls = sgTP.add(new BoolSetting.Builder()
         .name("不穿墙")
         .description("关闭V-Clip时若路径穿墙则放弃攻击，防止返回时卡墙")
-        .defaultValue(false)
+        .defaultValue(true)
         .visible(() -> !goUp.get() && returnPos.get())
         .build());
     private final Setting<Boolean> offsetFix = sgTP.add(new BoolSetting.Builder()
-        .name("偏移同步").description("发送微小偏移包防止拉回").defaultValue(true).build());
+        .name("随机偏移").description("发送微小偏移包防止拉回").defaultValue(true).build());
     private final Setting<Boolean> antiLag = sgTP.add(new BoolSetting.Builder()
         .name("反拉回").defaultValue(true).build());
     private final Setting<Integer> maxAntiLagRetries = sgTP.add(new IntSetting.Builder()
-        .name("每秒最多拉回次数").defaultValue(10).min(1).max(20).build());
+        .name("每秒最多拉回次数").defaultValue(20).min(1).sliderMax(20).build());
     private final Setting<Double> maxSingleTpDist = sgTP.add(new DoubleSetting.Builder()
-        .name("最大单次传送距离").defaultValue(0.0).min(0).sliderMax(100).build());
+        .name("最大单次传送距离").defaultValue(0.0).min(0).sliderMax(16).build());
 
     private final Setting<Set<EntityType<?>>> entities = sgTargeting.add(new EntityTypeListSetting.Builder()
         .name("目标实体").defaultValue(Collections.singleton(EntityType.PLAYER)).build());
@@ -123,9 +123,9 @@ public class TpAura extends Module {
     private final Setting<Boolean> renderPath = sgRender.add(new BoolSetting.Builder()
         .name("显示路径").defaultValue(true).build());
     private final Setting<SettingColor> pathColor = sgRender.add(new ColorSetting.Builder()
-        .name("轨迹颜色").defaultValue(new SettingColor(255, 0, 0, 100)).build());
+        .name("轨迹颜色").defaultValue(new SettingColor(0, 0, 0, 100)).build());
     private final Setting<SettingColor> targetColor = sgRender.add(new ColorSetting.Builder()
-        .name("目标颜色").defaultValue(new SettingColor(255, 0, 0, 200)).build());
+        .name("目标颜色").defaultValue(new SettingColor(0, 0, 0, 200)).build());
     private final Setting<Boolean> renderIntermediateNodes = sgRender.add(new BoolSetting.Builder()
         .name("渲染中间点").defaultValue(true).visible(() -> maxSingleTpDist.get() > 0).build());
     private final Setting<Integer> renderTimeMs = sgRender.add(new IntSetting.Builder()
