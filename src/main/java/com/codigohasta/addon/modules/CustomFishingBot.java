@@ -194,7 +194,7 @@ public class CustomFishingBot extends Module {
     private boolean acOffsetInitialized = false;
 
     public CustomFishingBot() {
-        super(AddonTemplate.CATEGORY, "custom-fishing-bot", "全自动钓鱼v5：颜色目标追踪+虚空钓鱼+智能咬钩检测");
+        super(AddonTemplate.CATEGORY, "custom-fishing-bot", "对一个服务器插件的钓鱼定制的模块，没做成，只是个实验");
     }
 
     @Override
