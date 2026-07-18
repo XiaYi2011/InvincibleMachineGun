@@ -57,6 +57,11 @@ loom {
     }
 }
 
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
 tasks {
     processResources {
         val propertyMap = mapOf(
@@ -79,12 +84,6 @@ tasks {
         from("LICENSE") {
             rename { "${it}_${inputs.properties["archivesName"]}" }
         }
-    }
-
-    // 保持你要求的 Java 21 环境
-    java {
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
     }
 
     withType<JavaCompile> {
